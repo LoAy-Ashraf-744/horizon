@@ -258,6 +258,7 @@ fn frame<'a>(
             root: std::path::Path::new("."),
             menu_blur_radius: 0.0,
             globals: Default::default(),
+            extras: None,
         },
     }
 }
