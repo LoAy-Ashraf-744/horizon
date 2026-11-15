@@ -163,14 +163,25 @@ impl Game<'_> {
             Ok((pack.manifest, labels, translucent))
         });
         remember(path, stamp, result.as_ref().ok().map(|(m, _, _)| m.api));
-        // The resources were loaded without a native pack, so without the resource packs'
-        // LabPBR maps its material stage reads: load them once, now that one runs.
-        if result.as_ref().is_ok_and(|(m, _, _)| m.material.is_some())
-            && !horizon_client::sprites::labpbr_maps()
-        {
-            horizon_client::sprites::set_labpbr_maps(true);
-            log::info!("Horizon: reloading resources for the LabPBR maps a native pack reads");
-            self.reload_packs();
+        // Failed hot reloads retain the preceding native pack and its map policy. An
+        // unavailable new selection has no preceding pack, so cannot retain obsolete maps.
+        let material_maps = match &result {
+            Ok((manifest, _, _)) => manifest.material.is_some(),
+            Err(_) => {
+                renderer.shader_pack_kind() == Some("native")
+                    && horizon_client::sprites::labpbr_maps()
+            }
+        };
+        if material_maps != horizon_client::sprites::labpbr_maps() {
+            renderer.drop_shader_packs();
+            // An existing resource load resets this pack's stamp when it applies. Let it
+            // finish before changing what its workers read; the next build rechecks demand.
+            if self.rest_loader.is_none() && self.pack_reload.is_none() && !self.pending_pack_reload
+            {
+                horizon_client::sprites::set_labpbr_maps(material_maps);
+                log::info!("Horizon: reloading resources for native pack material-map demand");
+                self.reload_packs();
+            }
         }
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         match result {
@@ -201,7 +212,7 @@ impl Game<'_> {
 /// Why the game doesn't draw a pack the check may still pass: `[frame] primaries = "bt2020"`
 /// isn't served yet (#14584), and shader API 0.2 is drawn only under `HORIZON_HDR_FRAME=float`
 /// (`switch`).
-fn not_drawn(m: &Manifest, switch: bool) -> Option<String> {
+pub(super) fn not_drawn(m: &Manifest, switch: bool) -> Option<String> {
     if m.primaries == Primaries::Bt2020 {
         return Some(
             "[frame] primaries = \"bt2020\" isn't served yet: leave it out, or set \"bt709\""
