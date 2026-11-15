@@ -302,7 +302,11 @@ pub struct Ext {
     pub brain: Option<Box<super::villager_brain::Brain>>,
     /// Saved memories awaiting the first brain initialization.
     pub saved_memories: Option<Box<super::villager_brain::Memories>>,
+    /// `[entities] villager_lobotomize`: whether the last check found the villager stuck
+    /// (`villager_lobotomy`). Not saved; `None` until the first check.
+    pub lobotomized: Option<bool>,
 }
+pub mod lobotomy;
 pub fn ext(m: &Mob) -> Option<&Ext> {
     m.extra.villager.as_deref()
 }
@@ -1086,7 +1090,7 @@ pub fn read_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
 pub fn tick_brain(
     m: &mut Mob,
     w: &MobWorld,
-    level_random: &mut horizon_core::random::LegacyRandom,
+    level_random: &mut horizon_core::random::LevelRandom,
     events: &mut Vec<MobEvent>,
 ) {
     tick_brain_with(
@@ -1102,11 +1106,14 @@ fn tick_brain_with(
     own_random: bool,
     m: &mut Mob,
     w: &MobWorld,
-    level_random: &mut horizon_core::random::LegacyRandom,
+    level_random: &mut horizon_core::random::LevelRandom,
     events: &mut Vec<MobEvent>,
 ) {
     if own_random {
-        let mut own = horizon_core::random::LegacyRandom::new(brain_seed(m.id, w.game_time));
+        // The parallel tick's stand-in for the level random, as `mob_turn_random` is for a mob's turn.
+        let mut own = horizon_core::random::LevelRandom::for_level(
+            horizon_core::random::LegacyRandom::new(brain_seed(m.id, w.game_time)),
+        );
         super::villager_brain::tick(m, w, &mut own, events);
     } else {
         super::villager_brain::tick(m, w, level_random, events);
@@ -1318,7 +1325,7 @@ mod tests {
     #[test]
     fn own_random_brain_tick_keeps_the_entity_random_sequence() {
         use horizon_core::geometry::Vec3;
-        use horizon_core::random::LegacyRandom;
+        use horizon_core::random::{LegacyRandom, LevelRandom};
         use std::sync::Arc;
         let ran = crate::mobs::world::with_test_world(&[], |w, types| {
             let make = || {
@@ -1330,7 +1337,10 @@ mod tests {
                 )
             };
             let (mut shared, mut own) = (make(), make());
-            let (mut level_shared, mut level_own) = (LegacyRandom::new(9), LegacyRandom::new(9));
+            let (mut level_shared, mut level_own) = (
+                LevelRandom::for_level(LegacyRandom::new(9)),
+                LevelRandom::for_level(LegacyRandom::new(9)),
+            );
             tick_brain_with(false, &mut shared, w, &mut level_shared, &mut Vec::new());
             tick_brain_with(true, &mut own, w, &mut level_own, &mut Vec::new());
             assert_eq!(
