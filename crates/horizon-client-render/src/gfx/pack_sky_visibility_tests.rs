@@ -28,7 +28,6 @@ fn pack_sun_and_moon_properties_control_independent_pixels() {
     )
     .unwrap();
     let pack = horizon_shaders::Pack::open(&dir).unwrap();
-    let macros = horizon_shaders::Macros::standard();
     let inputs = horizon_shaders::GameInputs {
         celestial: Some(super::super::pack_sky::celestial_inputs()),
         ..Default::default()
@@ -65,105 +64,191 @@ fn pack_sun_and_moon_properties_control_independent_pixels() {
         ("sun=false\nmoon=false", [black, black]),
         ("sun=true\nmoon=true", [red, green]),
     ] {
-        let properties = horizon_shaders::Properties::parse(properties, &macros);
-        let loaded = horizon_shaders::load_post(&pack, "", &properties, &macros, &inputs);
-        assert!(loaded.sky_textured.is_some(), "{:?}", loaded.notes);
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: T::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let world = World {
-            atlas: None,
-            sprite_rects: &[],
-            material_maps: None,
-            lightmap: texture.create_view(&Default::default()),
-            terrain: None,
-            block_ids: &[],
-            celestial: None,
-            gui_size: [8, 1],
-            clouds: None,
-            weather: false,
-            hand: false,
-        };
-        let mut post = PackPost::new(
-            &device,
-            &queue,
-            &adapter,
-            loaded,
-            T::Rgba8Unorm,
-            world,
-            &Default::default(),
-        )
-        .unwrap_or_else(|e| panic!("pack refused: {:?}", e.notes));
-        post.copied |= 1;
-        post.resize(&device, [8, 1]);
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let targets = post.targets.as_ref().unwrap();
-            let view = &targets.color[0].as_ref().unwrap()[0];
-            let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[attach(
-                    view,
-                    wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                )],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &targets.depth,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                ..Default::default()
-            });
-        }
-        post.draw_sky(&device, &queue, &mut encoder, [8, 1], &frame);
-        let read = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: 256,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        encoder.copy_texture_to_buffer(
-            post.targets.as_ref().unwrap().color[0].as_ref().unwrap()[0]
-                .texture()
-                .as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &read,
-                layout: wgpu::TexelCopyBufferLayout {
-                    bytes_per_row: Some(256),
-                    ..Default::default()
-                },
-            },
-            wgpu::Extent3d {
-                width: 8,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
+        let data = render_pack_sky(
+            &device, &queue, &adapter, &pack, &inputs, &frame, properties,
         );
-        queue.submit([encoder.finish()]);
-        read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        let data = read.slice(..).get_mapped_range().unwrap();
         for (pixel, color) in [(2, expected[0]), (6, expected[1])] {
+            assert_eq!(data[pixel], color, "properties={properties}, pixel={pixel}");
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn render_pack_sky(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    adapter: &wgpu::Adapter,
+    pack: &horizon_shaders::Pack,
+    inputs: &horizon_shaders::GameInputs,
+    frame: &super::super::Frame<'_>,
+    properties: &str,
+) -> [[u8; 3]; 8] {
+    let macros = horizon_shaders::Macros::standard();
+    let properties = horizon_shaders::Properties::parse(properties, &macros);
+    let loaded = horizon_shaders::load_post(pack, "", &properties, &macros, inputs);
+    assert!(
+        loaded.sky.is_some() || loaded.sky_textured.is_some(),
+        "{:?}",
+        loaded.notes
+    );
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: T::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let world = World {
+        atlas: None,
+        sprite_rects: &[],
+        material_maps: None,
+        lightmap: texture.create_view(&Default::default()),
+        terrain: None,
+        block_ids: &[],
+        celestial: None,
+        gui_size: [8, 1],
+        clouds: None,
+        weather: false,
+        hand: false,
+    };
+    let mut post = PackPost::new(
+        device,
+        queue,
+        adapter,
+        loaded,
+        T::Rgba8Unorm,
+        world,
+        &Default::default(),
+    )
+    .unwrap_or_else(|e| panic!("pack refused: {:?}", e.notes));
+    post.copied |= 1;
+    post.resize(device, [8, 1]);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let targets = post.targets.as_ref().unwrap();
+        let view = &targets.color[0].as_ref().unwrap()[0];
+        let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[attach(
+                view,
+                wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            )],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &targets.depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+    }
+    post.draw_sky(device, queue, &mut encoder, [8, 1], &frame);
+    let read = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 256,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    encoder.copy_texture_to_buffer(
+        post.targets.as_ref().unwrap().color[0].as_ref().unwrap()[0]
+            .texture()
+            .as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &read,
+            layout: wgpu::TexelCopyBufferLayout {
+                bytes_per_row: Some(256),
+                ..Default::default()
+            },
+        },
+        wgpu::Extent3d {
+            width: 8,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let data = read.slice(..).get_mapped_range().unwrap();
+    std::array::from_fn(|pixel| data[pixel * 4..pixel * 4 + 3].try_into().unwrap())
+}
+
+#[test]
+#[ignore = "requires an offscreen GPU adapter; setup failure is a failure"]
+fn pack_sky_property_hides_disc_horizon_sunset_and_void_pixels() {
+    let instance = crate::gfx::test_gpu::instance();
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
+        .expect("offscreen adapter");
+    eprintln!("Sky group adapter: {:?}", adapter.get_info());
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: adapter.limits(),
+        ..Default::default()
+    }))
+    .expect("offscreen device");
+    let dir = std::env::temp_dir().join(format!("hz-sky-group-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("shaders")).unwrap();
+    // Project the actual sky geometry onto three disjoint strips. The independent
+    // stage colours make a retained sunset/void visible even when SKY was removed.
+    std::fs::write(
+        dir.join("shaders/gbuffers_skybasic.vsh"),
+        r#"#version 120
+uniform int renderStage;
+void main() {
+    vec2 p = gl_Vertex.xz / 512.0;
+    float offset = -0.66;
+    gl_FrontColor = vec4(1.0, 0.0, 0.0, 1.0);
+    if (renderStage == MC_RENDER_STAGE_SUNSET) {
+        p = gl_Vertex.xz / 120.0;
+        offset = 0.0;
+        gl_FrontColor = vec4(0.0, 1.0, 0.0, 1.0);
+    } else if (renderStage == MC_RENDER_STAGE_VOID) {
+        offset = 0.66;
+        gl_FrontColor = vec4(0.0, 0.0, 1.0, 1.0);
+    }
+    gl_Position = vec4(p * vec2(0.28, 1.0) + vec2(offset, 0.0), 0.0, 1.0);
+}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("shaders/gbuffers_skybasic.fsh"),
+        "#version 120\nvoid main(){gl_FragData[0]=gl_Color;}",
+    )
+    .unwrap();
+    let pack = horizon_shaders::Pack::open(&dir).unwrap();
+    let inputs = horizon_shaders::GameInputs {
+        sky: Some(super::super::pack_sky::inputs()),
+        ..Default::default()
+    };
+    let hud = crate::hud::HudBatch::new([8, 1]);
+    let mut frame = frame(&hud, &[]);
+    frame.sky.sunrise_color = [1.0; 4];
+    frame.dark_disc = true;
+    for (properties, visible) in [
+        ("", true),
+        ("sky=false", false),
+        ("sky=true", true),
+        ("stars=false\nsun=false\nmoon=false", true),
+    ] {
+        let data = render_pack_sky(
+            &device, &queue, &adapter, &pack, &inputs, &frame, properties,
+        );
+        for (pixel, color) in [(1, [255, 0, 0]), (4, [0, 255, 0]), (6, [0, 0, 255])] {
             assert_eq!(
-                &data[pixel * 4..pixel * 4 + 3],
-                &color,
-                "properties={properties:?}, pixel={pixel}"
+                data[pixel],
+                if visible { color } else { [0; 3] },
+                "properties={properties}, pixel={pixel}"
             );
         }
     }
@@ -287,7 +372,9 @@ fn pack_visibility_selects_geometry_without_changing_order_or_unrelated_parts() 
         if mask & 1 != 0 {
             expected.push(("SKY", false, 20..30));
         }
-        expected.push(("SUNSET", false, 30..40));
+        if mask & 1 != 0 {
+            expected.push(("SUNSET", false, 30..40));
+        }
         if mask & 4 != 0 {
             expected.push(("SUN", true, 0..6));
         }
@@ -297,7 +384,9 @@ fn pack_visibility_selects_geometry_without_changing_order_or_unrelated_parts() 
         if mask & 2 != 0 {
             expected.push(("STARS", false, 40..50));
         }
-        expected.push(("VOID", false, 50..60));
+        if mask & 1 != 0 {
+            expected.push(("VOID", false, 50..60));
+        }
         assert_eq!(
             selected
                 .into_iter()
@@ -376,6 +465,150 @@ fn pack_visibility_native_fallback_preserves_end_flashes_and_native_sun_ownershi
                     .next()
                     .is_none()
             );
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires an offscreen GPU adapter; setup failure is a failure"]
+fn pack_sky_property_gates_native_fallback_submissions() {
+    use wgpu::util::DeviceExt;
+    let instance = crate::gfx::test_gpu::instance();
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
+        .expect("offscreen adapter");
+    eprintln!("Native sky gate adapter: {:?}", adapter.get_info());
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&Default::default())).expect("offscreen device");
+    // Original marker pipelines exercise the production helper used by the native
+    // disc, sunrise vertex fan and void. This does not construct a full Renderer.
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(
+            r#"
+@vertex fn generated(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    let p = array<vec2f, 3>(vec2f(-1., -1.), vec2f(3., -1.), vec2f(-1., 3.));
+    return vec4f(p[i], 0., 1.);
+}
+@vertex fn buffered(@location(0) p: vec2f) -> @builtin(position) vec4f {
+    return vec4f(p, 0., 1.);
+}
+@fragment fn colour() -> @location(0) vec4f { return vec4f(0., 1., 0., 1.); }
+"#
+            .into(),
+        ),
+    });
+    let attrs = wgpu::vertex_attr_array![0 => Float32x2];
+    let layout = [wgpu::VertexBufferLayout {
+        array_stride: 8,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &attrs,
+    }];
+    let pipelines = [false, true].map(|buffered| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some(if buffered { "buffered" } else { "generated" }),
+                compilation_options: Default::default(),
+                buffers: if buffered { &layout } else { &[] },
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("colour"),
+                compilation_options: Default::default(),
+                targets: &[Some(T::Rgba8Unorm.into())],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    });
+    let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&[[-1f32, -1.], [3., -1.], [-1., 3.]]),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: T::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&Default::default());
+    let read = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 256,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    for (properties, visible) in [
+        ("", true),
+        ("sky=false", false),
+        ("sky=true", true),
+        ("sun=false\nmoon=false\nstars=false", true),
+    ] {
+        let visibility = horizon_shaders::SkyVisibility::parse(
+            &horizon_shaders::Properties::parse(properties, &horizon_shaders::Macros::standard()),
+        );
+        for (part, buffered) in [("disc", false), ("sunrise", true), ("void", false)] {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[attach(
+                        &view,
+                        wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    )],
+                    ..Default::default()
+                });
+                super::super::pack_visibility::draw_sky_part(
+                    &mut pass,
+                    visibility,
+                    &pipelines[usize::from(buffered)],
+                    buffered.then_some(&vertices),
+                    3,
+                );
+            }
+            encoder.copy_texture_to_buffer(
+                texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &read,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        bytes_per_row: Some(256),
+                        ..Default::default()
+                    },
+                },
+                wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit([encoder.finish()]);
+            read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            {
+                let bytes = read.slice(..).get_mapped_range().unwrap();
+                assert_eq!(
+                    &bytes[..3],
+                    if visible { &[0, 255, 0] } else { &[0, 0, 0] },
+                    "properties={properties}, part={part}"
+                );
+            }
+            read.unmap();
         }
     }
 }

@@ -403,8 +403,8 @@ impl PackSky {
     }
 }
 
-/// Keep the existing sunset, void and End fog fan behavior; the four requests select only
-/// their named geometry. The End fan returns before filtering.
+/// The vanilla sky request covers its disc, horizon, sunset and void. The End fog fan
+/// is independent of the Overworld sky and returns before filtering.
 pub(super) fn parts(
     ranges: [Range<u32>; 5],
     frame: &super::Frame,
@@ -434,7 +434,7 @@ pub(super) fn parts(
         parts.push(part("VOID", false, void));
     }
     parts.retain(|part| match part.stage {
-        "SKY" => visibility.sky,
+        "SKY" | "SUNSET" | "VOID" => visibility.sky,
         "STARS" => visibility.stars,
         "SUN" => visibility.sun,
         "MOON" => visibility.moon,
