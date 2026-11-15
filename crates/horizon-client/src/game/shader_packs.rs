@@ -225,6 +225,7 @@ mod material_demand_tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let manifest = root.join(horizon_shader_api::MANIFEST);
+        let api = horizon_shader_api::manifest::API;
         for stage in ["sky", "post", "material"] {
             let table = match stage {
                 "post" => "[[post]]".to_owned(),
@@ -234,10 +235,12 @@ mod material_demand_tests {
                 &manifest,
                 format!(
                     "schema=1\nid=\"demand\"\nname=\"Demand\"\nversion=\"1\"\n\
-                     api=\"0.1\"\n{table}\nfile=\"stage.wgsl\"\n"
+                     api=\"{api}\"\n{table}\nfile=\"stage.wgsl\"\n"
                 ),
             )
             .unwrap();
+            horizon_shader_api::Pack::read_manifest(&root)
+                .unwrap_or_else(|error| panic!("{stage}: invalid current-API fixture: {error}"));
             // No shader source is needed to decide whether this native API exposes maps.
             for previous in [false, true] {
                 assert_eq!(
@@ -265,18 +268,16 @@ mod material_demand_tests {
 id="demand"
 name="Demand"
 version="1"
-api="0.2"
-[frame]
-blend="linear"
-primaries="bt709"
+api="0.1"
 [material]
 file="stage.wgsl"
 "#,
         )
         .unwrap();
+        assert!(horizon_shader_api::Pack::read_manifest(&root).is_err());
         assert!(
-            pack_material_maps(&root, false, true),
-            "the currently served native API 0.2 material stage requests maps"
+            !pack_material_maps(&root, false, true),
+            "a retired native API cannot retain learned material-map demand"
         );
         std::fs::remove_file(manifest).unwrap();
         std::fs::create_dir_all(root.join("shaders")).unwrap();
