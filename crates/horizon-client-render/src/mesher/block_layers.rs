@@ -107,12 +107,12 @@ impl SectionMesh {
             (false, &solid, &solid_sources),
             (true, &translucent, &translucent_sources),
         ] {
-            for (index, vertices) in vertices.chunks_exact(4).enumerate() {
+            for (index, vertices) in vertices.as_chunks::<4>().0.iter().enumerate() {
                 let source = sources.get(index).copied().unwrap_or_default();
                 let layer = pick(source);
                 let translucent =
                     layer.map_or(was_translucent, |layer| layer == RenderLayer::Translucent);
-                let mut quad: [TerrainVertex; 4] = vertices.try_into().unwrap();
+                let mut quad = *vertices;
                 if let Some(layer) = layer {
                     for vertex in &mut quad {
                         vertex.layer &= !OPAQUE_LAYER;
@@ -224,11 +224,8 @@ mod tests {
         assert_eq!(mesh.solid_tints, [0x112233, 0x778899, packed::UNKNOWN_TINT]);
         assert_eq!(mesh.solid.len(), 12);
         assert_eq!(mesh.translucent.len(), 4);
-        for (quad, expected) in
-            mesh.solid
-                .chunks_exact(4)
-                .zip([11, 11 | OPAQUE_LAYER, 11 | OPAQUE_LAYER])
-        {
+        let quads = mesh.solid.as_chunks::<4>().0;
+        for (quad, expected) in quads.iter().zip([11, 11 | OPAQUE_LAYER, 11 | OPAQUE_LAYER]) {
             assert!(
                 quad.iter()
                     .all(|v| v.layer == expected && v.color == 0x12345678 && v.light == 0x9876)
@@ -296,7 +293,11 @@ mod tests {
         }
         let defaults = BlockLayerTable::default().with_lava_layers(vec![7]);
         mesh.route_layers(&defaults, |_| false);
-        assert!(mesh.solid.iter().all(|vertex| vertex.layer == (7 | OPAQUE_LAYER)));
+        assert!(
+            mesh.solid
+                .iter()
+                .all(|vertex| vertex.layer == (7 | OPAQUE_LAYER))
+        );
         let selections = table(vec![
             [None, None],
             [Some(RenderLayer::Cutout), None],
@@ -307,7 +308,8 @@ mod tests {
         mesh.route_layers(&selections, |_| false);
         assert_eq!(mesh.solid_sources, sources);
         assert!(mesh.translucent.is_empty());
-        for (quad, opaque) in mesh.solid.chunks_exact(4).zip([true, false, false, true]) {
+        let quads = mesh.solid.as_chunks::<4>().0;
+        for (quad, opaque) in quads.iter().zip([true, false, false, true]) {
             assert!(quad.iter().all(|v| (v.layer & OPAQUE_LAYER != 0) == opaque));
         }
     }

@@ -103,11 +103,8 @@ fn strips_with_origin(
             &format!("vec4 hz_origin=vec4(0.0,0.0,0.0,{origin:?});\n"),
         );
     }
-    let inputs = super::super::pack_atlas::game_terrain(
-        Some(terrain),
-        &[LAVA, LAVA + 1],
-        origin.is_some(),
-    );
+    let inputs =
+        super::super::pack_atlas::game_terrain(Some(terrain), &[LAVA, LAVA + 1], origin.is_some());
     const ATTRS: [wgpu::VertexAttribute; 3] =
         wgpu::vertex_attr_array![0=>Float32x3,2=>Uint32,3=>Unorm8x4];
     let layouts = [Some(wgpu::VertexBufferLayout {
