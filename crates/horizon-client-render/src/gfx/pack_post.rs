@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use glam::{DMat4, DVec3};
-use horizon_shaders::{Format, Group, Kind, Post, SHADOW_COLORS};
+use horizon_shaders::{BUFFERS, Format, Group, Kind, Post, SHADOW_COLORS};
 use smallvec::SmallVec;
 
 use super::pack_draw::DrawUniforms;
@@ -28,9 +28,8 @@ use super::pack_sky::PackSky;
 use super::pack_textures;
 use super::pack_uniforms::{self, FrameUniforms, PackInputs};
 
-const BUFFERS: usize = horizon_shaders::BUFFERS;
-
 mod packed;
+mod sky;
 
 #[cfg(test)]
 mod history_reset_tests;
@@ -56,6 +55,10 @@ mod sky_disc_blend_tests;
 #[cfg(test)]
 mod undrawn_terrain_tests;
 
+mod image_formats;
+use image_formats::{image_format, storage_formats_of};
+#[cfg(test)]
+mod full_outputs_tests;
 #[cfg(test)]
 mod shadow_faces_tests;
 
@@ -1200,31 +1203,7 @@ pub(super) type TerrainDraw<'a> = dyn FnMut(
         Option<(u32, &wgpu::BindGroupLayout)>,
     ) + 'a;
 
-/// What the shadow camera sees of the terrain, for the game's draw lists: its view and
-/// projection in wgpu's clip space, the direction toward the light, and how far from the camera
-/// terrain is drawn (`shadowDistanceRenderMul`).
-pub(super) struct ShadowView {
-    pub cull: glam::Mat4,
-    pub light: glam::Vec3,
-    pub distance: Option<f32>,
-    /// Draw everything, every face, within this many blocks (`shadow.culling=false|reversed`):
-    /// packs that voxelize the world in their shadow pass need all of it.
-    pub unculled: Option<f32>,
-    /// Every face of the drawn sections, not only those that can face the light. Iris 1.11.7's
-    /// shadow map holds the faces turned away from the light too (#9033): under a hill at low sun
-    /// a cave's ceiling, which faces away, is often all that shadows the cave.
-    pub every_face: bool,
-    /// Only the sections whose shadow can fall into the camera's view: those the camera's
-    /// frustum, stretched toward the light, takes in (`shadow_casters`). Our probes' Iris 1.11.7
-    /// maps fit keeping only those with `shadow.culling` unset (#8464): under a noon sun, only
-    /// the terrain above the ground the camera sees; with a low sun ahead, none behind the camera.
-    pub view_casters: bool,
-    /// Whether the projection's near and far planes in `cull` drop sections too. Our probes'
-    /// Iris 1.11.7 maps hold the terrain at every depth we put it along the light (from 535 blocks
-    /// beyond the shadow camera to about 120 before it), whatever `shadowNearPlane` and
-    /// `shadowFarPlane` the pack sets, or none (#10403): only its sides cull.
-    pub depth_planes: bool,
-}
+pub(super) use super::external::ShadowView;
 
 /// An arena page's key, native vertices and optional per-quad source records.
 pub(super) type TerrainPage = (u32, wgpu::Buffer, Option<wgpu::Buffer>);
@@ -1826,98 +1805,6 @@ fn bindings(
         images.push((i.binding, target));
     }
     Some((entries, samplers, slots, reads, shadow_reads, images))
-}
-
-/// Makes each storage image of `module` in group 0 declare the format its layout entry binds:
-/// a `layout(r11f_g11f_b10f)` image whose texture is the `RGBA16F` stand-in (`bindings`).
-fn storage_formats_of(module: &mut naga::Module, entries: &[wgpu::BindGroupLayoutEntry]) {
-    let globals: Vec<_> = module.global_variables.iter().map(|(h, _)| h).collect();
-    for handle in globals {
-        let var = &module.global_variables[handle];
-        let Some(naga::ResourceBinding { group: 0, binding }) = var.binding else {
-            continue;
-        };
-        let naga::TypeInner::Image {
-            dim,
-            arrayed,
-            class: naga::ImageClass::Storage { format, access },
-        } = module.types[var.ty].inner
-        else {
-            continue;
-        };
-        let bound = entries.iter().find_map(|e| match e.ty {
-            wgpu::BindingType::StorageTexture { format, .. } if e.binding == binding => {
-                Some(format)
-            }
-            _ => None,
-        });
-        if format == naga::StorageFormat::Rg11b10Ufloat
-            && bound == Some(wgpu::TextureFormat::Rgba16Float)
-        {
-            let ty = module.types.insert(
-                naga::Type {
-                    name: module.types[var.ty].name.clone(),
-                    inner: naga::TypeInner::Image {
-                        dim,
-                        arrayed,
-                        class: naga::ImageClass::Storage {
-                            format: naga::StorageFormat::Rgba16Float,
-                            access,
-                        },
-                    },
-                },
-                naga::Span::UNDEFINED,
-            );
-            module.global_variables[handle].ty = ty;
-        }
-    }
-}
-
-/// The wgpu format of an image's format qualifier.
-fn image_format(qualifier: &str) -> Option<wgpu::TextureFormat> {
-    use wgpu::TextureFormat as T;
-    Some(match qualifier {
-        "rgba32f" => T::Rgba32Float,
-        "rgba16f" => T::Rgba16Float,
-        "rg32f" => T::Rg32Float,
-        "rg16f" => T::Rg16Float,
-        "r11f_g11f_b10f" => T::Rg11b10Ufloat,
-        "r32f" => T::R32Float,
-        "r16f" => T::R16Float,
-        "rgba16" => T::Rgba16Unorm,
-        "rgb10_a2" => T::Rgb10a2Unorm,
-        "rgba8" => T::Rgba8Unorm,
-        "rg16" => T::Rg16Unorm,
-        "rg8" => T::Rg8Unorm,
-        "r16" => T::R16Unorm,
-        "r8" => T::R8Unorm,
-        "rgba16_snorm" => T::Rgba16Snorm,
-        "rgba8_snorm" => T::Rgba8Snorm,
-        "rg16_snorm" => T::Rg16Snorm,
-        "rg8_snorm" => T::Rg8Snorm,
-        "r16_snorm" => T::R16Snorm,
-        "r8_snorm" => T::R8Snorm,
-        "rgba32i" => T::Rgba32Sint,
-        "rgba16i" => T::Rgba16Sint,
-        "rgba8i" => T::Rgba8Sint,
-        "rg32i" => T::Rg32Sint,
-        "rg16i" => T::Rg16Sint,
-        "rg8i" => T::Rg8Sint,
-        "r32i" => T::R32Sint,
-        "r16i" => T::R16Sint,
-        "r8i" => T::R8Sint,
-        "rgba32ui" => T::Rgba32Uint,
-        "rgba16ui" => T::Rgba16Uint,
-        "rgb10_a2ui" => T::Rgb10a2Uint,
-        "rgba8ui" => T::Rgba8Uint,
-        "rg32ui" => T::Rg32Uint,
-        "rg16ui" => T::Rg16Uint,
-        "rg8ui" => T::Rg8Uint,
-        "r32ui" => T::R32Uint,
-        "r16ui" => T::R16Uint,
-        "r8ui" => T::R8Uint,
-        _ => return None,
-    })
 }
 
 /// The value slot of the pack's custom uniform `name` for a program declaring it as GLSL type
@@ -2807,10 +2694,21 @@ impl PackPost {
             .shadow
             .zip(shadow_geometry.as_ref())
             .and_then(|(p, g)| build(p, Some(g)));
+        // A GPU that refuses translucent terrain's program with the boats' water patches gets it
+        // without them (`Post::shadow_water_plain`), rather than no translucent shadows at all.
+        let mut plain = post.shadow_water_plain;
         let shadow_water = post
             .shadow_water
             .zip(shadow_geometry.as_ref())
             .and_then(|(p, g)| build(p, Some(g)));
+        let unpatched = shadow_water.is_none().then(|| plain.take()).flatten();
+        let unpatched_name = unpatched.as_ref().map(|p| p.name.clone());
+        let shadow_water = shadow_water.or_else(|| {
+            unpatched
+                .zip(shadow_geometry.as_ref())
+                .and_then(|(p, g)| build(p, Some(g)))
+        });
+        let water_unpatched = unpatched_name.filter(|_| shadow_water.is_some());
         let (hides_sky, hides_celestial) = (post.sky.is_some(), post.sky_textured.is_some());
         let sky = (post.sky.is_some() || post.sky_textured.is_some()).then(|| {
             let geometry = PackSky::new(device);
@@ -3044,17 +2942,13 @@ impl PackPost {
                 p.name
             ));
         }
-        match (&terrain, &mut terrain_cutout) {
+        match (&terrain, &terrain_cutout) {
             (Some(t), None) => notes.push(format!("terrain draws with {}", t.name)),
             (t, Some(c)) => {
                 if let Some(t) = t {
                     notes.push(format!("solid terrain draws with {}", t.name));
                 }
                 notes.push(format!("cutout terrain draws with {}", c.name));
-                // Timed (and labelled) apart from the solid part when it runs the same program.
-                if t.as_ref().is_some_and(|t| t.name == c.name) {
-                    c.name.push_str(" (cutout)");
-                }
             }
             (None, None) => {}
         }
@@ -3367,6 +3261,17 @@ impl PackPost {
         let white = [255u8; 4];
         let black = [0u8; 4];
         let flat_normal = [128u8, 128, 255, 255];
+        // Said as what it is, not as a program skipped.
+        if let Some(name) = water_unpatched {
+            let skipped = format!("{name}: skipped: ");
+            if let Some(n) = notes.iter_mut().rev().find(|n| n.starts_with(&skipped)) {
+                *n = format!(
+                    "{name}: translucent terrain without the boats' water patches, as the GPU \
+                     refused it with them ({})",
+                    &n[skipped.len()..]
+                );
+            }
+        }
         let jobs = (pack.jobs.as_ref())
             .map(std::cell::RefCell::take)
             .unwrap_or_default();
@@ -3905,7 +3810,7 @@ impl PackPost {
             timestamp_writes: self
                 .timing
                 .as_mut()
-                .and_then(|t| t.compute_writes(&pass.name)),
+                .and_then(|t| t.compute_writes(&format!("{} (compute)", pass.name))),
         });
         cp.set_pipeline(&pipeline);
         cp.set_bind_group(0, &group, &[]);
@@ -3981,8 +3886,8 @@ impl PackPost {
     }
 
     /// Terrain (or, `translucent`, translucent terrain) with the pack's program; `draw` issues
-    /// the game's draws. Solid terrain in two parts has its cutout part drawn second, from the
-    /// same draws.
+    /// the game's draws. Solid terrain in two parts (a pack's `gbuffers_terrain_solid` and
+    /// `_cutout`) has its cutout part drawn second, from the same draws.
     fn draw_terrain(
         &mut self,
         device: &wgpu::Device,
@@ -4063,78 +3968,6 @@ impl PackPost {
 
     /// The sky's parts in vanilla's order, each with the program that draws it; one render pass
     /// while consecutive programs write the same buffers.
-    fn draw_sky(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        size: [u32; 2],
-        frame: &super::Frame,
-    ) {
-        let Some(mut sky) = self.sky.take() else {
-            return;
-        };
-        let parts = sky.geometry.prepare(
-            queue,
-            frame,
-            self.uniforms.shadow.sun_path_rotation,
-            self.sky_visibility,
-        );
-        let mut groups = [None, None];
-        for (i, pass) in [&mut sky.basic, &mut sky.textured].into_iter().enumerate() {
-            if let Some(pass) = pass {
-                groups[i] = Some(self.bind(device, queue, encoder, pass, size));
-                self.mips_valid &= !pass.written;
-            }
-        }
-        let passes = [&sky.basic, &sky.textured];
-        let mut open: Option<(wgpu::RenderPass<'_>, usize)> = None;
-        for part in parts {
-            let i = usize::from(part.textured);
-            let (Some(pass), Some(group)) = (passes[i], &groups[i]) else {
-                continue;
-            };
-            let current = open.as_ref().map(|o| o.1);
-            if current != Some(i) {
-                let same = current
-                    .and_then(|c| passes[c].as_ref())
-                    .is_some_and(|p| p.writes == pass.writes);
-                if !same {
-                    drop(open.take());
-                    open = Some((self.begin(encoder, pass).forget_lifetime(), i));
-                }
-                let rp = &mut open.as_mut().expect("open").0;
-                rp.set_pipeline(pass.render());
-                rp.set_bind_group(0, group, &[]);
-                // A sky program that reads the pack's SSBOs (Noble's `gbuffers_textured`, the
-                // sun's fallback) binds them, as the other passes do.
-                if pass.buffers
-                    && let Some(g) = &self.buffers.group
-                {
-                    rp.set_bind_group(4, g, &[]);
-                }
-                sky.geometry.bind(rp, part.textured);
-                open.as_mut().expect("open").1 = i;
-            }
-            let rp = &mut open.as_mut().expect("open").0;
-            // Each part with vanilla's blend for it: one program, three pipelines.
-            let part_pipeline =
-                pass.sky_parts
-                    .as_ref()
-                    .and_then(|[plain, stars]| match part.stage {
-                        "SKY" | "VOID" => plain.get(),
-                        "STARS" => stars.get(),
-                        _ => None,
-                    });
-            rp.set_pipeline(part_pipeline.unwrap_or(pass.render()));
-            if pass.draw {
-                self.draws.bind(rp, part.stage);
-            }
-            rp.draw(part.range, 0..1);
-        }
-        drop(open);
-        self.sky = Some(sky);
-    }
 
     /// Entities, block entities, translucent entity parts and particles with the pack's
     /// programs, those drawn before deferred or (`late`) after: each run `prepare_entities` kept
@@ -4831,10 +4664,6 @@ impl PackPost {
     /// Whether the pack has a sky program, drawing or not: vanilla's sky is then not drawn.
     pub fn has_sky(&self) -> bool {
         self.hides_sky
-    }
-
-    pub fn sky_visibility(&self) -> horizon_shaders::SkyVisibility {
-        self.sky_visibility
     }
 
     /// Whether the pack has the sun and moon's program, drawing or not.

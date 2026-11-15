@@ -92,7 +92,7 @@ Player.isEquipped	inline	crates/horizon-client/src/game/potions.rs::Game::turtle
 Player.canPlayerFitWithinBlocksAndEntitiesWhen	port	crates/horizon-client/src/pose.rs::MotionWorld::can_fit_pose	the box of the pose's dimensions at the player's position, deflated by 1e-7, tested against the player's collision; `update_player_pose` asks it for the swimming, the desired and the crouching pose in that order, as `updatePlayerPose` does
 Player.increaseScore	skip:other		the score is experience.total in Horizon (death screen); there is no separate score counter
 Player.getWeaponItem	missing		the riptide spin attack keeps only `auto_spin_attack_ticks` and `auto_spin_attack_dmg`, not the stack it started with (`autoSpinAttackItemStack`), so there is no item to answer with mid-spin
-Player.destroyVanishingCursedItems	port	crates/horizon-client/src/game.rs::Game::drop_inventory	vanishing-curse stacks are removed from the death drops
+Player.destroyVanishingCursedItems	port	crates/horizon-client/src/game/item_entities.rs::Game::drop_inventory	vanishing-curse stacks are removed from the death drops
 Player.hasCorrectToolForDrops	port	crates/horizon-client/src/game.rs::Game::tick_mining	the correct-tool test for harvest drops
 Player.canDropItems	inline	crates/horizon-client/src/lan/menu.rs::click	THROW is not acted on while the client has dropped items too fast
 Player.readAdditionalSaveData	port	crates/horizon-client/src/save.rs::Level::read_player	
@@ -120,7 +120,7 @@ Player.debugInfo	skip:debug
 Player.printPlayerPermissions	skip:debug		
 PlayerEquipment.set	port	crates/horizon-world/src/player_equipment.rs::set	main hand goes to the selected slot
 PlayerEquipment.get	port	crates/horizon-world/src/player_equipment.rs::get	main hand reads the selected slot
-ProfilePublicKey.Data.hasExpired	port	crates/horizon-protocol/src/secure_chat.rs::ProfileKey::has_expired	gap: minor: the grace-period overload is not separate
+ProfilePublicKey.Data.hasExpired	port	crates/horizon-protocol/src/secure_chat.rs::ProfileKey::has_expired	hasExpired() is has_expired; the Duration overload is ProfileKey::has_expired_with, which the chat validator calls with EXPIRY_GRACE_PERIOD (8 hours, ProfilePublicKey.EXPIRY_GRACE_PERIOD)
 ProfilePublicKey.Data.equals	skip:java		value equality of the key record
 StackedContents.take	inline	crates/horizon-client/src/menu/place.rs::Picker::try_pick	the count subtraction when a pick succeeds
 StackedContents.getUniqueAvailableIngredientItems	inline	crates/horizon-client/src/menu/place.rs::Picker::new	the stocked items that some ingredient accepts

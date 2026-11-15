@@ -50,6 +50,59 @@ fn held_focus(
     }
 }
 
+/// What a person's event does at an agent's window no one has clicked yet.
+#[derive(Debug, PartialEq)]
+enum Unclaimed {
+    /// A mouse button pressed inside it: the window is theirs from this press on.
+    Claims,
+    /// Their keys, wheel, input method and button releases, and the focus the system gives the
+    /// window or takes from it: the game the agent drives hears none of them.
+    Dropped,
+    /// Everything else, and whatever the agent or the game sends.
+    Passes,
+}
+
+/// Only a press claims the window. The focus doesn't: Windows and X11 can hand it to a window
+/// nobody clicked, and the person's keys and mouse would then steer the agent's game (#15449).
+/// The pointer's position still passes, so the press that claims a menu lands where it points.
+fn at_unclaimed(
+    origin: input_trace::InputOrigin,
+    unclaimed: bool,
+    event: &WindowEvent,
+) -> Unclaimed {
+    if !unclaimed || origin != input_trace::InputOrigin::User {
+        return Unclaimed::Passes;
+    }
+    match event {
+        WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            ..
+        } => Unclaimed::Claims,
+        WindowEvent::CursorMoved { .. } => Unclaimed::Passes,
+        WindowEvent::Focused(_) => Unclaimed::Dropped,
+        _ if is_input(event) => Unclaimed::Dropped,
+        _ => Unclaimed::Passes,
+    }
+}
+
+/// The Shift, Ctrl or Alt a person holds at an agent's window no one has clicked yet. The game
+/// doesn't hear of them, but winit tells of modifiers only as they change: the last state is
+/// kept for the claim, where a Ctrl held since before the click would otherwise read as up.
+fn held_modifiers(
+    origin: input_trace::InputOrigin,
+    unclaimed: bool,
+    event: &WindowEvent,
+) -> Option<winit::event::Modifiers> {
+    match event {
+        WindowEvent::ModifiersChanged(modifiers)
+            if unclaimed && origin == input_trace::InputOrigin::User =>
+        {
+            Some(*modifiers)
+        }
+        _ => None,
+    }
+}
+
 impl Game<'_> {
     /// winit's `window_event`. The control socket and the pad menu call it too, with the
     /// input they make up.
@@ -69,12 +122,20 @@ impl Game<'_> {
         if !ours {
             return;
         }
+        if let Some(modifiers) = held_modifiers(origin, self.unclaimed_window, &event) {
+            self.unclaimed_modifiers = Some(modifiers);
+        }
         if locks_out(origin, self.scripted_run(), &event) {
             return;
         }
         if let Some(focused) = held_focus(origin, self.scripted_run(), &event) {
             self.focus_after_run = Some(focused);
             return;
+        }
+        match at_unclaimed(origin, self.unclaimed_window, &event) {
+            Unclaimed::Claims => self.claim_window(event_loop),
+            Unclaimed::Dropped => return,
+            Unclaimed::Passes => {}
         }
         follow_keymap(&mut event);
         // MacosUtil.setCtrlClickEmulatesRightClick: Control + left click is a right click.
@@ -107,9 +168,21 @@ impl Game<'_> {
                 state: ElementState::Pressed,
                 ..
             }
-        ) && !self.pad.menu.synthetic
+        ) && !self.input_made_pointer_event()
         {
-            self.pad.keyboard_took_over = true;
+            self.input_keyboard_used();
+        }
+        // A key or a mouse button pressed while the pad holds the radial menu open closes it,
+        // and goes on to do what it does. Moving the mouse does neither (`device_event`).
+        let pressed = match &event {
+            WindowEvent::KeyboardInput { event, .. } => {
+                event.state == ElementState::Pressed && !event.repeat
+            }
+            WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
+            _ => false,
+        };
+        if pressed && !self.pad.menu.synthetic {
+            self.pad_radial_cancel();
         }
         if let WindowEvent::MouseInput { state, button, .. } = &event {
             if *state == ElementState::Pressed {
@@ -144,11 +217,19 @@ impl Game<'_> {
 
     /// The loop ended: close the pads' output, save the world, write the perf report.
     pub(super) fn shut_down(&mut self) {
+        // Closing without an error before HDR output showed a frame (the window minimized, say)
+        // isn't HDR output taking the game down: the next start mustn't hold it back.
+        if self.error.is_none()
+            && let Some(renderer) = &mut self.renderer
+        {
+            renderer.drop_hdr_marker();
+        }
         self.end_screenshot_sequence(Err("cancelled: the game is closing".into()));
         self.pad_close_output();
         if let Err(e) = self.save_for_exit() {
             log::warn!("Horizon: failed to save the world on exit: {e}");
         }
+        self.finish_profile();
         self.finish_perf();
     }
     /// winit's `about_to_wait`: what happens between frames (stop requests, the closing
@@ -215,8 +296,10 @@ impl Game<'_> {
         horizon_client::spans::time("pads", || self.poll_pads(event_loop));
         self.settle_after_run(event_loop);
         self.pause_if_inactive();
-        if self.options.frames.is_some() && self.started.elapsed() > self.options.timeout {
-            self.error = Some("frame-limited run timed out".into());
+        if let Some(limit) = self.options.time_limit()
+            && self.started.elapsed() > limit
+        {
+            self.error = Some(format!("run timed out after {} s", limit.as_secs()).into());
             event_loop.exit();
             return;
         }
@@ -264,17 +347,16 @@ impl ApplicationHandler for Game<'_> {
         let fullscreen = self.settings.fullscreen || self.options.fullscreen;
         let size = self.options.window_size.map(f64::from);
         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
-        let attributes = horizon_client::window::with_horizon_icon(
-            Window::default_attributes().with_title("Horizon"),
-        );
+        let attributes =
+            horizon_client::window::with_icon(Window::default_attributes().with_title("Horizon"));
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
             attributes, "horizon", "horizon",
         );
-        // A game an agent started opens without the focus, as splitscreen's windows do: the
-        // person keeps their keyboard and pointer until they click it (`unclaimed_window`).
-        // X11 activates it anyway, and says so with a `Focused`.
+        // A game an agent started opens without the focus, as splitscreen's windows do, and
+        // the person keeps their keyboard and pointer until they click it (`unclaimed_window`).
+        // X11 activates it anyway, and Windows can too: the focus claims nothing.
         let agent_started = self.options.control.is_some();
         self.unclaimed_window = agent_started && !self.options.offscreen;
         // `--offscreen` renders into a texture: its window would only show white.
@@ -294,6 +376,10 @@ impl ApplicationHandler for Game<'_> {
             }
         };
         horizon_client::window::settle_created_fullscreen(&window, fullscreen);
+        #[cfg(target_os = "windows")]
+        if let Some(hwnd) = hwnd(&window) {
+            horizon_threads::system_menu::suppress(hwnd);
+        }
         drop(window_step);
         horizon_client::telemetry::note_display(&window);
         match self.new_renderer(window.clone()) {
@@ -316,6 +402,7 @@ impl ApplicationHandler for Game<'_> {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let key = if self.window.as_ref().is_some_and(|w| w.id() == id)
             && !self.scripted_run()
+            && !self.unclaimed_window
             && let WindowEvent::KeyboardInput {
                 event,
                 is_synthetic: false,
@@ -336,6 +423,7 @@ impl ApplicationHandler for Game<'_> {
         // controls a visible native window. A headless offscreen run never does.
         if self.pending_save.is_none()
             && !self.scripted_run()
+            && !self.unclaimed_window
             && self.captured
             && self.focused
             && self.keyboard_mouse
@@ -343,6 +431,13 @@ impl ApplicationHandler for Game<'_> {
             && self.screen == Screen::Playing
             && let DeviceEvent::MouseMotion { delta: (x, y) } = event
         {
+            // While the pad holds the radial menu open the mouse does nothing, as the right stick
+            // doesn't turn the view: it neither cancels the menu nor takes control back, nor
+            // turns the view. A thumb is on the opener, so the motion is a bumped desk.
+            if self.pad_radial_captures() {
+                return;
+            }
+            // Moving the mouse hands control back from the pad.
             if x != 0.0 || y != 0.0 {
                 self.pad_yield_input(event_loop);
             }
@@ -423,6 +518,93 @@ mod tests {
             assert_eq!(
                 held_focus(InputOrigin::User, true, &event),
                 None,
+                "{event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_persons_press_claims_an_agents_window() {
+        let device_id = DeviceId::dummy();
+        let press = WindowEvent::MouseInput {
+            device_id,
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        assert_eq!(
+            at_unclaimed(InputOrigin::User, true, &press),
+            Unclaimed::Claims
+        );
+        // The focus alone claims nothing, and the game doesn't hear of it.
+        for focused in [true, false] {
+            let event = WindowEvent::Focused(focused);
+            assert_eq!(
+                at_unclaimed(InputOrigin::User, true, &event),
+                Unclaimed::Dropped
+            );
+        }
+        let release = WindowEvent::MouseInput {
+            device_id,
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        };
+        for event in inputs().into_iter().skip(1).chain([release]) {
+            let want = match event {
+                WindowEvent::CursorMoved { .. } => Unclaimed::Passes,
+                _ => Unclaimed::Dropped,
+            };
+            assert_eq!(
+                at_unclaimed(InputOrigin::User, true, &event),
+                want,
+                "{event:?}"
+            );
+        }
+        for event in [
+            WindowEvent::CloseRequested,
+            WindowEvent::Resized(PhysicalSize::new(854, 480)),
+        ] {
+            assert_eq!(
+                at_unclaimed(InputOrigin::User, true, &event),
+                Unclaimed::Passes,
+                "{event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_persons_modifiers_are_kept_for_the_claim() {
+        let shift = Modifiers::from(ModifiersState::SHIFT);
+        let event = WindowEvent::ModifiersChanged(shift);
+        assert_eq!(held_modifiers(InputOrigin::User, true, &event), Some(shift));
+        assert_eq!(held_modifiers(InputOrigin::User, false, &event), None);
+        assert_eq!(held_modifiers(InputOrigin::Agent, true, &event), None);
+        assert_eq!(
+            held_modifiers(InputOrigin::User, true, &WindowEvent::Focused(true)),
+            None
+        );
+    }
+
+    #[test]
+    fn the_agent_still_drives_its_unclaimed_window() {
+        let events = inputs().into_iter().chain([WindowEvent::Focused(true)]);
+        for event in events {
+            for origin in [InputOrigin::Agent, InputOrigin::Game] {
+                assert_eq!(
+                    at_unclaimed(origin, true, &event),
+                    Unclaimed::Passes,
+                    "{event:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_ordinary_window_hears_everything() {
+        let events = inputs().into_iter().chain([WindowEvent::Focused(true)]);
+        for event in events {
+            assert_eq!(
+                at_unclaimed(InputOrigin::User, false, &event),
+                Unclaimed::Passes,
                 "{event:?}"
             );
         }

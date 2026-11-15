@@ -28,6 +28,13 @@ impl Game<'_> {
     /// `itemGroup.<mod>.<name>`, else its `title` as a lang key (a mod's own
     /// `itemGroup.<mod>`), else `title` as English text.
     pub(super) fn creative_tab_title(&self, tab: &horizon_client::creative::Tab) -> String {
+        if let Some((name, _, translate)) = &tab.name {
+            return if *translate {
+                self.translate(name, name)
+            } else {
+                name.clone()
+            };
+        }
         match horizon_client::creative::item_group_key(&tab.id) {
             Some(key) => self.translate(key, &tab.title),
             None => {
@@ -144,7 +151,12 @@ impl Game<'_> {
                 &title,
                 ox + 8.0,
                 oy + 6.0,
-                rgba(64, 64, 64, 255),
+                tab.name
+                    .as_ref()
+                    .and_then(|n| n.1)
+                    .map_or(rgba(64, 64, 64, 255), |c| {
+                        rgba((c >> 16) as u8, (c >> 8) as u8, c as u8, 255)
+                    }),
                 false,
             );
         }
@@ -283,6 +295,13 @@ impl Game<'_> {
         if let Some(lines) = effect_tip {
             self.draw_tooltip_lines(batch, &lines, self.cursor.0, self.cursor.1);
         }
+        // CreativeModeInventoryScreen.checkTabHovering: a tab says its name.
+        if let Some(i) = Creative::hovered_tab(&tabs, (ox, oy), self.cursor)
+            && let Some(t) = tabs.get(i)
+        {
+            let title = self.creative_tab_title(t);
+            self.tooltip(batch, &title, self.cursor.0, self.cursor.1);
+        }
     }
     pub(super) fn creative_trash_hovered(batch: &HudBatch, cursor: (f32, f32)) -> bool {
         let (ox, oy) = Self::creative_origin(batch);
@@ -381,19 +400,23 @@ impl Game<'_> {
             }
             return;
         }
-        let tabs = self.creative_screen.tabs.clone();
-        for (i, t) in tabs.iter().enumerate() {
-            if !self.creative_screen.on_page(t) {
-                continue;
-            }
+        // Only the clicked tab's index is needed: cloning the tabs here copied
+        // every tab's items on each click, saved hotbars' stacks included.
+        let creative = &self.creative_screen;
+        let clicked = creative.tabs.iter().position(|t| {
             let (tx, ty) = Creative::tab_position(t);
-            if cx >= ox + tx && cx < ox + tx + 26.0 && cy >= oy + ty && cy < oy + ty + 32.0 {
-                select_creative_tab(&mut self.creative_screen, &mut self.inv_clicks, i);
-                self.refresh_saved_hotbars();
-                self.inv_drag = None;
-                self.last_inv_click = None;
-                return;
-            }
+            creative.on_page(t)
+                && cx >= ox + tx
+                && cx < ox + tx + 26.0
+                && cy >= oy + ty
+                && cy < oy + ty + 32.0
+        });
+        if let Some(i) = clicked {
+            select_creative_tab(&mut self.creative_screen, &mut self.inv_clicks, i);
+            self.refresh_saved_hotbars();
+            self.inv_drag = None;
+            self.last_inv_click = None;
+            return;
         }
         if self.creative_inventory_open() {
             if Self::creative_trash_hovered(&batch, self.cursor) {

@@ -8,7 +8,7 @@ hardness/tool rules, collect drops from the block loot tables, place blocks,
 craft in the 2x2 inventory grid or on a crafting table, and save and reload worlds
 in vanilla's Anvil format.
 
-**Status:** playable; players get it through [the launcher](../launcher/README.md). The [harness table](../README.md#project-status)
+**Status:** playable; players get it through [the launcher](../launcher/README.md). The [harness table](status.md#what-the-harnesses-compare)
 in the README scores each subsystem against vanilla and lists what is still
 missing; [Rust rewrite status](rust-parity.md) has the details.
 
@@ -61,11 +61,11 @@ glibc. An absent musl archive is not a reason to install the glibc archive on a 
 
 ## Run from a checkout
 
-Use current stable Rust (1.90+) and JDK 25 (Python 3.10+ only for the development
+Use current stable Rust (1.90+) and JDK 25 (Python 3.11+ only for the development
 harnesses). A checkout never
 downloads the game: resource preparation imports **your own copy** (the 26.3
 client from your official launcher install, and the 26.3 server jar you
-downloaded yourself; see [Build from source](../README.md#build-from-source)),
+downloaded yourself; see [Build from source](#run-from-a-checkout)),
 verifies it against the pinned checksums, runs vanilla's data generator and small
 exporters against those jars, and extracts the jar's assets and data into ignored
 `.local/horizon-client/26.3/`. Sounds (about 380 MB) are copied from your
@@ -423,13 +423,18 @@ While Discord runs on the same computer, the player's Discord profile shows
 "Playing Horizon" and what they are doing: "In the menus", "Singleplayer",
 "Multiplayer" or "Hosting a world" (with the party size, of 8), the dimension
 ("In the Nether") and the time since they entered the world. It never shows a
-world's name or a server's address. Horizon Settings has the switch
-(**Discord Rich Presence**, on by default; `discordPresence` in
-`horizon-extras.txt`), and `HORIZON_NO_DISCORD=1` turns it off for one run.
+world's name or a server's address. The switch is on the Extras page, in its
+Multiplayer group (**Discord Rich Presence**, on by default; `discordPresence`
+in `horizon-extras.txt`; in splitscreen only the first player has it), and
+`HORIZON_NO_DISCORD=1` turns it off for one run.
 
-`crates/horizon-client/src/discord_presence.rs` speaks Discord's local IPC
-itself (the `discord-ipc-N` socket or named pipe, no SDK) from a thread of its
-own: the frame only hands it a status when it changes. It retries every 15 s
+The crate `horizon-discord` (Horizon layer) speaks Discord's local IPC itself
+(the `discord-ipc-N` socket or named pipe, no SDK) from a thread of its own.
+The game hands it a status only when it changes, through the platform's
+`activity` hook (`game/activity.rs` says what the player does), and keeps the
+switch itself: its settings store and its Extras row (the platform's settings
+and pages registries). Only the official executable (`horizon-official`)
+registers it: horizon-client's own executable shows no presence and no switch. It retries every 15 s
 while Discord isn't running and stays within Discord's 5 updates per 20 s.
 Dedicated servers never start it, and automated runs (offscreen, benchmarks)
 only talk to a fake Discord: `lab.game_env` sets `HORIZON_NO_DISCORD=1`, and
