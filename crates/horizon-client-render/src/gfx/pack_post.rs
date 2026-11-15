@@ -3966,9 +3966,6 @@ impl PackPost {
         *self.terrain_slot(list, cutout) = Some(pass);
     }
 
-    /// The sky's parts in vanilla's order, each with the program that draws it; one render pass
-    /// while consecutive programs write the same buffers.
-
     /// Entities, block entities, translucent entity parts and particles with the pack's
     /// programs, those drawn before deferred or (`late`) after: each run `prepare_entities` kept
     /// is one draw with its own `entityId` or `blockEntityId` and `entityColor`.

@@ -2,6 +2,8 @@
 use super::*;
 
 impl PackPost {
+    /// The sky's parts in vanilla's order, each with the program that draws it; one render pass
+    /// while consecutive programs write the same buffers.
     pub(super) fn draw_sky(
         &mut self,
         device: &wgpu::Device,
