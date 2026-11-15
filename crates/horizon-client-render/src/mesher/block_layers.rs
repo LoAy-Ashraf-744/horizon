@@ -1,7 +1,7 @@
 //! Shader-pack layer routing after vanilla face generation and before sorting/upload.
 //! Source-state metadata, not a sprite, identifies each quad's selection.
 
-use super::{MeshTables, OPAQUE_LAYER, SectionMesh, TerrainSource, TerrainVertex, packed};
+use super::{MeshTables, OPAQUE_LAYER, SectionMesh, TerrainSource, packed};
 use horizon_shaders::{BlockLayers, RenderLayer};
 use horizon_world::{
     fluid::{FluidKind, FluidState},
@@ -140,6 +140,7 @@ impl SectionMesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mesher::TerrainVertex;
     use horizon_shaders::{Macros, Properties};
 
     fn table(states: Vec<[Option<RenderLayer>; 2]>) -> BlockLayerTable {
