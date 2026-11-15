@@ -154,7 +154,7 @@ fn render_pack_sky(
             ..Default::default()
         });
     }
-    post.draw_sky(device, queue, &mut encoder, [8, 1], &frame);
+    post.draw_sky(device, queue, &mut encoder, [8, 1], frame);
     let read = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: 256,
@@ -498,11 +498,11 @@ fn pack_sky_property_gates_native_fallback_submissions() {
         ),
     });
     let attrs = wgpu::vertex_attr_array![0 => Float32x2];
-    let layout = [wgpu::VertexBufferLayout {
+    let layout = [Some(wgpu::VertexBufferLayout {
         array_stride: 8,
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &attrs,
-    }];
+    })];
     let pipelines = [false, true].map(|buffered| {
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: None,
