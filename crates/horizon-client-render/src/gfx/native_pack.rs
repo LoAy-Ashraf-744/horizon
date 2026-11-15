@@ -217,6 +217,7 @@ impl NativePack {
             && option_on(constants, option);
         frame.reads_opaque = reads_opaque(&report.stages);
         let fog = report.material_fog;
+        let coverage = report.manifest.coverage;
         let keeps = |key: fn(&horizon_shader_api::Stage) -> Option<bool>| {
             report.sky.as_ref().and_then(key).unwrap_or(true)
         };
@@ -271,6 +272,7 @@ impl NativePack {
                     stage,
                     constants,
                     fog,
+                    coverage,
                     has_vertex,
                     displaced.as_ref(),
                 )
@@ -319,14 +321,6 @@ impl NativePack {
             || self.material.is_some()
             || self.weather.is_some()
             || self.post.is_some()
-    }
-
-    /// Whether a stage reads the arena's solid quads as `TerrainVertex`es, so they upload
-    /// wide (`Renderer::follow_packed_layout`): the material's vertex entries, the shadow
-    /// pass and `[displacement]`'s copy of the quads. A pack with none of them draws solid
-    /// terrain through the engine's own pipelines, which unpack compact records.
-    pub fn reads_terrain_vertices(&self) -> bool {
-        self.material.is_some() || self.shadow.is_some() || self.displacement.is_some()
     }
 }
 
@@ -402,7 +396,7 @@ file = \"material.wgsl\"
             return;
         };
         let (globals, empty) = terrain_layouts(&device);
-        let report = pack("0.1", false);
+        let report = pack("0.1", "");
         let built = NativePack::new(
             &device,
             &queue,
@@ -414,48 +408,12 @@ file = \"material.wgsl\"
         assert!(built.is_err(), "the pack should be refused");
     }
 
-    /// A 0.2 pack whose stages read no terrain vertices (a sky, and the post every 0.2 pack
-    /// runs) leaves the solid quads in the compact layout; one with a material stage, whose
-    /// vertex entries take `TerrainVertex`es, does not (#16127).
-    #[test]
-    fn only_a_pack_with_a_material_shadow_or_displacement_reads_terrain_vertices() {
-        let instance = crate::gfx::test_gpu::instance();
-        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
-            return;
-        };
-        let Ok((device, queue)) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                required_limits: adapter.limits(),
-                ..Default::default()
-            }))
-        else {
-            return;
-        };
-        let (globals, empty) = terrain_layouts(&device);
-        let reads = |material: bool| {
-            let report = pack("0.2", material);
-            let shape = terrain_shape(&globals, &empty);
-            let (pack, _) =
-                NativePack::new(&device, &queue, &shape, report, &[], Default::default()).unwrap();
-            assert!(pack.post.is_some() && pack.sky.is_some());
-            assert_eq!(pack.material.is_some(), material);
-            pack.reads_terrain_vertices()
-        };
-        assert!(!reads(false));
-        assert!(reads(true));
-    }
-
-    /// A pack of API `api` with a sky stage, and a material stage if `material`.
-    fn pack(api: &str, material: bool) -> horizon_shader_api::Report {
+    /// A pack of API `api` with a sky stage and the manifest's `stages` after it.
+    fn pack(api: &str, stages: &str) -> horizon_shader_api::Report {
         use horizon_shader_api::{MANIFEST, Pack, check};
         let manifest = format!(
             "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"{api}\"\n\
-             [sky]\nfile = \"sky.wgsl\"\n{}",
-            if material {
-                "[material]\nfile = \"material.wgsl\"\n"
-            } else {
-                ""
-            }
+             [sky]\nfile = \"sky.wgsl\"\n{stages}"
         );
         let mut files = vec![
             (MANIFEST, manifest.as_str()),
@@ -464,11 +422,17 @@ file = \"material.wgsl\"
                 "fn sky(input: SkyInput) -> vec4<f32> { return input.color; }\n",
             ),
         ];
-        if material {
-            files.push((
-                "material.wgsl",
-                "fn material(input: MaterialInput) -> Surface { return Surface(input.albedo); }\n",
-            ));
+        // `[displacement]` takes its function from the material's file.
+        let material = format!(
+            "fn material(input: MaterialInput) -> Surface {{ return Surface(input.albedo); }}\n{}",
+            if stages.contains("[displacement]") {
+                "fn displacement(input: DisplacementInput) -> f32 { return 0.0; }\n"
+            } else {
+                ""
+            }
+        );
+        if stages.contains("[material]") {
+            files.push(("material.wgsl", &material));
         }
         let files = files
             .into_iter()
