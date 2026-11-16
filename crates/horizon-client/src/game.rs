@@ -2606,11 +2606,25 @@ impl Game<'_> {
         &self,
         origin: [f64; 3],
         block_entity: Option<horizon_core::nbt::Tag>,
+        at_state: Option<BlockStateId>,
     ) -> horizon_world::loot::LootPlace {
         let (rain, thunder) = self.world.weather.levels(1.0);
         // Level.canHaveWeather: sky light, no ceiling and not the End.
         let weather =
             self.world.shape.sky_light && !self.world.shape.has_ceiling && self.dim != Dim::End;
+        let pos = origin.map(|v| v.floor() as i32);
+        // A broken block's own drops still name it after the removal, so the
+        // caller passes the state it broke; every other roll reads the block
+        // it started on.
+        let state = at_state.unwrap_or_else(|| self.world.block(pos[0], pos[1], pos[2]));
+        let facts = self.res.facts().get(state);
+        let packed = self.world.light(pos[0], pos[1], pos[2]);
+        let sky = i32::from(packed >> 4);
+        let fluid = match facts.fluid {
+            crate::blocks::Fluid::Water => Some("minecraft:water".to_owned()),
+            crate::blocks::Fluid::Lava => Some("minecraft:lava".to_owned()),
+            _ => None,
+        };
         horizon_world::loot::LootPlace {
             origin: Some(origin),
             block_entity,
@@ -2621,6 +2635,21 @@ impl Game<'_> {
                 raining: weather && rain > 0.2,
                 thundering: weather && thunder > 0.9,
             }),
+            block: Some(horizon_world::loot::LootBlockState {
+                name: facts.name.to_string(),
+                properties: self
+                    .pack
+                    .assets
+                    .registry
+                    .state(state)
+                    .map(|s| s.properties.clone())
+                    .unwrap_or_default(),
+            }),
+            // Level.getMaxLocalRawBrightness: block light, or sky light less
+            // the sky darkening.
+            light: Some(i32::from(packed & 15).max(sky - self.sky_darken())),
+            can_see_sky: Some(sky >= 15),
+            fluid,
         }
     }
     /// `Block.getDrops` for a block a player breaks: the block's loot table
@@ -2635,7 +2664,7 @@ impl Game<'_> {
         block_entity: Option<horizon_core::nbt::Tag>,
     ) -> Vec<ItemStack> {
         let dynamic = self.pending.dynamic(pos);
-        let place = self.loot_place_at(pos.map(|v| f64::from(v) + 0.5), block_entity);
+        let place = self.loot_place_at(pos.map(|v| f64::from(v) + 0.5), block_entity, Some(state));
         let (_, entity) = self.native_clicker();
         let mut drops = horizon_world::loot::with_native_loot_place(place, || {
             let roll = horizon_client::items::BlockLootRoll {

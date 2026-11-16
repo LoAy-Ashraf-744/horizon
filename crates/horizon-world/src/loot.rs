@@ -180,6 +180,28 @@ pub struct LootPlace {
     pub block_entity: Option<Tag>,
     /// The level the roll is in.
     pub level: Option<LootLevel>,
+    /// The block at [`Self::origin`] when the game had a level to read it
+    /// from: what `LocationPredicate.block` compares. It is the block the
+    /// roll started on (the broken block for a block's own drops), not the
+    /// block at a `location_check` offset.
+    pub block: Option<LootBlockState>,
+    /// `Level.getMaxLocalRawBrightness` at [`Self::origin`]: the brighter of
+    /// the block light and the sky light less `Level.getSkyDarken`.
+    pub light: Option<i32>,
+    /// `Level.canSeeSky` at [`Self::origin`]: sky light 15 there.
+    pub can_see_sky: Option<bool>,
+    /// `Level.getFluidState` at [`Self::origin`]: `minecraft:water` or
+    /// `minecraft:lava`; `None` is the empty fluid.
+    pub fluid: Option<String>,
+}
+
+/// The block a loot roll happens on, as `LocationPredicate.block` sees it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LootBlockState {
+    /// The block's registry id (`minecraft:oak_log`).
+    pub name: String,
+    /// The state's property values, in name order.
+    pub properties: crate::chunk::BlockProperties,
 }
 
 /// The level a loot roll is in, as a mod's own loot kinds see it.
@@ -1206,6 +1228,69 @@ fn weight_draw(random: &mut impl RandomSource, total: i64) -> i64 {
     }
 }
 
+/// Whether a codec's id names `full`: a bare path is `minecraft:`'s.
+fn same_id(id: &str, full: &str) -> bool {
+    id == full || (!id.contains(':') && full.strip_prefix("minecraft:") == Some(id))
+}
+
+/// `MinMaxBounds.Doubles.matches`: a bare number is an exact bound.
+fn bounds_f(v: &Value, x: f64) -> bool {
+    match v {
+        Value::Null => true,
+        Value::Number(n) => n.as_f64() == Some(x),
+        Value::Object(o) => {
+            o.get("min")
+                .and_then(Value::as_f64)
+                .is_none_or(|min| x >= min)
+                && o.get("max")
+                    .and_then(Value::as_f64)
+                    .is_none_or(|max| x <= max)
+        }
+        _ => false,
+    }
+}
+
+/// `MinMaxBounds.Ints.matches`.
+fn bounds_i(v: &Value, x: i64) -> bool {
+    match v {
+        Value::Null => true,
+        Value::Number(n) => n.as_i64() == Some(x),
+        Value::Object(o) => {
+            o.get("min")
+                .and_then(Value::as_i64)
+                .is_none_or(|min| x >= min)
+                && o.get("max")
+                    .and_then(Value::as_i64)
+                    .is_none_or(|max| x <= max)
+        }
+        _ => false,
+    }
+}
+
+/// `StatePropertiesPredicate.RangedMatcher`, whose bounds are strings; an
+/// integer property compares numerically, any other by its string value.
+fn property_bounds(bounds: &serde_json::Map<String, Value>, have: &str) -> bool {
+    let bound = |key: &str| {
+        bounds.get(key).and_then(|v| {
+            v.as_str()
+                .map(str::to_owned)
+                .or_else(|| v.as_i64().map(|n| n.to_string()))
+        })
+    };
+    let min_ok =
+        bound("min").is_none_or(|min| compare_property(have, &min) != std::cmp::Ordering::Less);
+    let max_ok =
+        bound("max").is_none_or(|max| compare_property(have, &max) != std::cmp::Ordering::Greater);
+    min_ok && max_ok
+}
+
+fn compare_property(have: &str, bound: &str) -> std::cmp::Ordering {
+    match (have.parse::<i64>(), bound.parse::<i64>()) {
+        (Ok(a), Ok(b)) => a.cmp(&b),
+        _ => have.cmp(bound),
+    }
+}
+
 /// Mth.nextInt.
 fn next_int(random: &mut impl RandomSource, min: i32, max: i32) -> i32 {
     if min >= max {
@@ -1342,6 +1427,198 @@ impl<R: RandomSource> Context<'_, R> {
     fn entity_matches(&self, p: &Value, e: Option<&LootEntity>) -> bool {
         self.data.entity_matches(p, e)
     }
+
+    /// `LocationCheck.test` / `LocationPredicate.matches`: the predicate at
+    /// `ORIGIN + offset`. A field whose data the roll did not capture fails;
+    /// it is never taken as unconstrained.
+    fn location_matches(&self, c: &Value) -> bool {
+        let place = current_native_loot_place();
+        let origin = place.as_ref().and_then(|p| p.origin);
+        // `LocationCheck.test`: no ORIGIN, no match. The main engine's
+        // fishing roll names its biome without a place, so a biome-only
+        // predicate keeps matching there.
+        if origin.is_none() && self.biome.is_none() {
+            return false;
+        }
+        let predicate = &c["predicate"];
+        if predicate.is_null() {
+            return true;
+        }
+        let Some(predicate) = predicate.as_object() else {
+            return false;
+        };
+        let offset = [
+            c["offsetX"].as_i64().unwrap_or(0),
+            c["offsetY"].as_i64().unwrap_or(0),
+            c["offsetZ"].as_i64().unwrap_or(0),
+        ];
+        let at = origin.map(|p| {
+            [
+                p[0] + offset[0] as f64,
+                p[1] + offset[1] as f64,
+                p[2] + offset[2] as f64,
+            ]
+        });
+        if let Some(position) = predicate.get("position").filter(|p| !p.is_null()) {
+            let Some(at) = at else { return false };
+            // `LocationPredicate.PositionPredicate.matches`.
+            if !bounds_f(&position["x"], at[0])
+                || !bounds_f(&position["y"], at[1])
+                || !bounds_f(&position["z"], at[2])
+            {
+                return false;
+            }
+        }
+        if let Some(dimension) = predicate.get("dimension").filter(|d| !d.is_null()) {
+            let Some(level) = place.as_ref().and_then(|p| p.level.as_ref()) else {
+                return false;
+            };
+            let Some(dimension) = dimension.as_str() else {
+                return false;
+            };
+            if !same_id(dimension, &level.dimension) {
+                return false;
+            }
+        }
+        if let Some(biomes) = predicate.get("biomes").filter(|b| !b.is_null()) {
+            let Some(biome) = self.biome else {
+                return false;
+            };
+            // `LocationPredicate.biomes`: a HolderSet, so a `#tag` (the loot
+            // data's biome tags, packs included), an id or a list of ids.
+            if !self
+                .data
+                .holder_set("worldgen/biome", biomes)
+                .iter()
+                .any(|b| b == biome)
+            {
+                return false;
+            }
+        }
+        // Every remaining field is a fact of the block at the origin; the
+        // place carries no world to read at an offset from it.
+        let origin_only = place.as_ref().filter(|_| offset == [0, 0, 0]);
+        if let Some(block) = predicate.get("block").filter(|b| !b.is_null()) {
+            let Some(place) = origin_only else {
+                return false;
+            };
+            if !self.block_matches(block, place) {
+                return false;
+            }
+        }
+        if let Some(light) = predicate.get("light").filter(|l| !l.is_null()) {
+            let Some(place) = origin_only else {
+                return false;
+            };
+            let Some(light_at) = place.light else {
+                return false;
+            };
+            if !bounds_i(&light["light"], i64::from(light_at)) {
+                return false;
+            }
+        }
+        if let Some(fluid) = predicate.get("fluid").filter(|f| !f.is_null()) {
+            let Some(place) = origin_only else {
+                return false;
+            };
+            // A FluidState's properties are not captured, so a `state`
+            // matcher cannot be answered.
+            if !fluid["state"].is_null() {
+                return false;
+            }
+            let have = place.fluid.as_deref().unwrap_or("minecraft:empty");
+            let fluids = &fluid["fluids"];
+            if !fluids.is_null()
+                && !self
+                    .data
+                    .holder_set("fluid", fluids)
+                    .iter()
+                    .any(|f| f == have)
+            {
+                return false;
+            }
+        }
+        if let Some(want) = predicate.get("can_see_sky").filter(|s| !s.is_null()) {
+            let Some(place) = origin_only else {
+                return false;
+            };
+            let Some(want) = want.as_bool() else {
+                return false;
+            };
+            if place.can_see_sky != Some(want) {
+                return false;
+            }
+        }
+        // `CampfireBlock.isSmokeyPos` needs the block's collision shape and
+        // a campfire tag read from the level; the place captures neither.
+        if predicate.get("smokey").is_some_and(|s| !s.is_null()) {
+            return false;
+        }
+        // Structure lookups need the level's structure manager.
+        if predicate.get("structures").is_some_and(|s| !s.is_null()) {
+            return false;
+        }
+        true
+    }
+    /// `BlockPredicate.matchesState` and `matchesBlockEntity` for the block
+    /// [`LootPlace::block`] captured.
+    fn block_matches(&self, predicate: &Value, place: &LootPlace) -> bool {
+        let Some(state) = place.block.as_ref() else {
+            return false;
+        };
+        let blocks = &predicate["blocks"];
+        if !blocks.is_null()
+            && !self
+                .data
+                .holder_set("block", blocks)
+                .iter()
+                .any(|b| b == &state.name)
+        {
+            return false;
+        }
+        for key in ["state", "properties"] {
+            let Some(properties) = predicate.get(key).and_then(Value::as_object) else {
+                continue;
+            };
+            for (name, want) in properties {
+                let Some(have) = state.properties.get(name) else {
+                    return false;
+                };
+                let holds = match want {
+                    Value::String(value) => have == value,
+                    Value::Bool(value) => have == &value.to_string(),
+                    Value::Number(value) => have == &value.to_string(),
+                    Value::Object(bounds) => property_bounds(bounds, have),
+                    _ => false,
+                };
+                if !holds {
+                    return false;
+                }
+            }
+        }
+        if let Some(nbt) = predicate.get("nbt").and_then(Value::as_str) {
+            let Ok((pattern, _)) = horizon_core::nbt::parse_snbt(nbt) else {
+                return false;
+            };
+            if !horizon_core::nbt::compare_nbt(&pattern, place.block_entity.as_ref()) {
+                return false;
+            }
+        }
+        // `DataComponentMatchers` reads the block entity's components, which
+        // Horizon does not collect; only an empty matcher holds.
+        if predicate
+            .get("components")
+            .and_then(Value::as_object)
+            .is_some_and(|c| !c.is_empty())
+            || predicate
+                .get("predicates")
+                .and_then(Value::as_object)
+                .is_some_and(|p| !p.is_empty())
+        {
+            return false;
+        }
+        true
+    }
     /// A number provider. An unknown type gives 0, as in items.rs `number`
     /// (a data pack's typo yields nothing rather than a full roll).
     fn int(&mut self, v: &Value) -> i32 {
@@ -1469,21 +1746,7 @@ impl<R: RandomSource> Context<'_, R> {
                     let chance = self.float(&c["chance"]);
                     self.random.next_float() < chance
                 }
-                "minecraft:location_check" => {
-                    let Some(biome) = self.biome else {
-                        return false;
-                    };
-                    // `LocationPredicate.biomes`: a HolderSet, so a `#tag`
-                    // (the loot data's biome tags, packs included), an id or
-                    // a list of ids.
-                    match &c["predicate"]["biomes"] {
-                        Value::Null => true,
-                        set => data
-                            .holder_set("worldgen/biome", set)
-                            .iter()
-                            .any(|b| b == biome),
-                    }
-                }
+                "minecraft:location_check" => self.location_matches(c),
                 // A mod's own kind: the hook answers; a bare type name is
                 // minecraft's own and an unknown one fails.
                 k if k.contains(':') && !k.starts_with("minecraft:") => {
@@ -3507,6 +3770,304 @@ mod location_check_biome_tests {
         assert!(drops(&data, Some("minecraft:bamboo_jungle")));
         assert!(drops(&data, Some("minecraft:desert")));
         assert!(!drops(&data, Some("minecraft:savanna")));
+    }
+}
+
+#[cfg(test)]
+mod location_check_fields_tests {
+    use super::*;
+
+    /// One stone drop whose `location_check` is `condition` (the fields after
+    /// the type).
+    fn table(name: &str, condition: &str) -> LootData {
+        let root =
+            std::env::temp_dir().join(format!("loot-location-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("data/minecraft/loot_table");
+        fs::create_dir_all(&dir).unwrap();
+        let json =
+            r#"{"pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:stone",
+            "condition":{"type":"minecraft:location_check",CONDITION}}]}]}"#
+                .replace("CONDITION", condition);
+        fs::write(dir.join("test.json"), json).unwrap();
+        let tags = root.join("data/minecraft/tags/block");
+        fs::create_dir_all(&tags).unwrap();
+        fs::write(
+            tags.join("logs.json"),
+            r#"{"values":["minecraft:oak_log"]}"#,
+        )
+        .unwrap();
+        fs::write(root.join("items.json"), "{}").unwrap();
+        let defaults = crate::item_defaults::read(&root).unwrap();
+        let data = LootData::load(&root, &PackOverlay::NONE, &defaults).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        data
+    }
+
+    fn drops(data: &LootData, place: LootPlace) -> bool {
+        with_native_loot_place(place, || {
+            !data
+                .roll("minecraft:test", &mut LegacyRandom::new(1), 0.0, None, None)
+                .is_empty()
+        })
+    }
+
+    fn place() -> LootPlace {
+        LootPlace {
+            origin: Some([0.5, 64.0, 0.5]),
+            level: Some(LootLevel {
+                dimension: "minecraft:overworld".to_owned(),
+                ..LootLevel::default()
+            }),
+            ..LootPlace::default()
+        }
+    }
+
+    fn block_place(name: &str, properties: &[(&str, &str)]) -> LootPlace {
+        LootPlace {
+            block: Some(LootBlockState {
+                name: name.to_owned(),
+                properties: properties
+                    .iter()
+                    .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                    .collect(),
+            }),
+            ..place()
+        }
+    }
+
+    fn with_dimension(dimension: &str) -> LootPlace {
+        LootPlace {
+            level: Some(LootLevel {
+                dimension: dimension.to_owned(),
+                ..LootLevel::default()
+            }),
+            ..place()
+        }
+    }
+
+    /// `LocationPredicate.dimension` is a `ResourceKey<Level>`; a bare path
+    /// names the `minecraft:` dimension.
+    #[test]
+    fn dimension_matches_the_place_level() {
+        let data = table(
+            "dimension",
+            r#""predicate":{"dimension":"minecraft:the_nether"}"#,
+        );
+        assert!(drops(&data, with_dimension("minecraft:the_nether")));
+        assert!(!drops(&data, with_dimension("minecraft:overworld")));
+
+        let bare = table(
+            "dimension_bare",
+            r#""predicate":{"dimension":"the_nether"}"#,
+        );
+        assert!(drops(&bare, with_dimension("minecraft:the_nether")));
+
+        // Without a level in the place there is nothing to compare.
+        let missing = table(
+            "dimension_missing",
+            r#""predicate":{"dimension":"minecraft:overworld"}"#,
+        );
+        assert!(!drops(
+            &missing,
+            LootPlace {
+                level: None,
+                ..place()
+            }
+        ));
+    }
+
+    /// `LocationPredicate.position` reads the x, y and z `MinMaxBounds` at
+    /// `ORIGIN + offset`; the offset is `LocationCheck`'s.
+    #[test]
+    fn position_reads_the_origin_and_offset() {
+        let data = table(
+            "position",
+            r#""predicate":{"position":{"x":{"min":1.0,"max":2.0},"y":64.0,"z":{"max":0.5}}}"#,
+        );
+        let mut at = place();
+        at.origin = Some([1.5, 64.0, 0.5]);
+        assert!(drops(&data, at.clone()));
+        at.origin = Some([1.5, 64.001, 0.5]);
+        assert!(!drops(&data, at.clone()));
+        at.origin = Some([0.5, 64.0, 0.5]);
+        assert!(!drops(&data, at.clone()));
+
+        let offset = table(
+            "position_offset",
+            r#""predicate":{"position":{"x":{"min":2.0,"max":3.0}}},"offsetX":2"#,
+        );
+        at.origin = Some([0.5, 64.0, 0.5]);
+        assert!(drops(&offset, at.clone()));
+        at.origin = Some([1.5, 64.0, 0.5]);
+        assert!(!drops(&offset, at.clone()));
+
+        let offset_y = table(
+            "position_offset_y",
+            r#""predicate":{"position":{"y":65.0}},"offsetY":1"#,
+        );
+        at.origin = Some([0.5, 64.0, 0.5]);
+        assert!(drops(&offset_y, at));
+    }
+
+    /// `BlockPredicate.blocks` is a HolderSet (`#tag`, an id or a list) and
+    /// `state` is a `StatePropertiesPredicate` (exact or ranged).
+    #[test]
+    fn block_matches_its_holder_set_state_and_properties() {
+        let data = table(
+            "block",
+            r##""predicate":{"block":{"blocks":"#minecraft:logs","state":{"axis":"x"}}}"##,
+        );
+        assert!(drops(
+            &data,
+            block_place("minecraft:oak_log", &[("axis", "x")])
+        ));
+        assert!(!drops(
+            &data,
+            block_place("minecraft:oak_log", &[("axis", "y")])
+        ));
+        assert!(!drops(
+            &data,
+            block_place("minecraft:stone", &[("axis", "x")])
+        ));
+
+        let list = table(
+            "block_list",
+            r#""predicate":{"block":{"blocks":["minecraft:oak_log","minecraft:birch_log"]}}"#,
+        );
+        assert!(drops(&list, block_place("minecraft:birch_log", &[])));
+
+        let ranged = table(
+            "block_range",
+            r#""predicate":{"block":{"blocks":"minecraft:wheat","state":{"age":{"min":"2","max":"4"}}}}"#,
+        );
+        assert!(drops(
+            &ranged,
+            block_place("minecraft:wheat", &[("age", "3")])
+        ));
+        assert!(!drops(
+            &ranged,
+            block_place("minecraft:wheat", &[("age", "5")])
+        ));
+        assert!(!drops(&ranged, block_place("minecraft:wheat", &[])));
+    }
+
+    /// `BlockPredicate.nbt` compares the block entity's full metadata.
+    #[test]
+    fn block_nbt_matches_the_block_entity() {
+        let data = table(
+            "block_nbt",
+            r#""predicate":{"block":{"nbt":"{id:\"minecraft:chest\",Lock:\"key\"}"}}"#,
+        );
+        let mut p = block_place("minecraft:chest", &[]);
+        p.block_entity = Some(Tag::compound([
+            ("id", Tag::String("minecraft:chest".into())),
+            ("Lock", Tag::String("key".into())),
+        ]));
+        assert!(drops(&data, p.clone()));
+        p.block_entity = Some(Tag::compound([
+            ("id", Tag::String("minecraft:chest".into())),
+            ("Lock", Tag::String("other".into())),
+        ]));
+        assert!(!drops(&data, p));
+    }
+
+    /// `LightPredicate.composite` reads the captured
+    /// `getMaxLocalRawBrightness`.
+    #[test]
+    fn light_reads_the_captured_brightness() {
+        let data = table(
+            "light",
+            r#""predicate":{"light":{"light":{"min":10,"max":15}}}"#,
+        );
+        let mut p = place();
+        p.light = Some(12);
+        assert!(drops(&data, p.clone()));
+        p.light = Some(5);
+        assert!(!drops(&data, p.clone()));
+        p.light = None;
+        assert!(!drops(&data, p.clone()));
+
+        let exact = table("light_exact", r#""predicate":{"light":{"light":7}}"#);
+        p.light = Some(7);
+        assert!(drops(&exact, p));
+    }
+
+    /// `FluidPredicate.fluids` is a HolderSet of the captured fluid; the
+    /// empty fluid is any fluids-free predicate.
+    #[test]
+    fn fluid_reads_the_captured_fluid() {
+        let data = table(
+            "fluid",
+            r#""predicate":{"fluid":{"fluids":"minecraft:water"}}"#,
+        );
+        let mut p = place();
+        p.fluid = Some("minecraft:water".to_owned());
+        assert!(drops(&data, p.clone()));
+        p.fluid = Some("minecraft:lava".to_owned());
+        assert!(!drops(&data, p.clone()));
+
+        let any = table("fluid_any", r#""predicate":{"fluid":{}}"#);
+        p.fluid = None;
+        assert!(drops(&any, p.clone()));
+
+        let state = table(
+            "fluid_state",
+            r#""predicate":{"fluid":{"state":{"level":"0"}}}"#,
+        );
+        p.fluid = Some("minecraft:water".to_owned());
+        assert!(!drops(&state, p));
+    }
+
+    /// `LocationPredicate.canSeeSky` reads the captured `Level.canSeeSky`.
+    #[test]
+    fn can_see_sky_reads_the_captured_flag() {
+        let data = table("sky", r#""predicate":{"can_see_sky":true}"#);
+        let mut p = place();
+        p.can_see_sky = Some(true);
+        assert!(drops(&data, p.clone()));
+        p.can_see_sky = Some(false);
+        assert!(!drops(&data, p.clone()));
+        let dark = table("sky_dark", r#""predicate":{"can_see_sky":false}"#);
+        p.can_see_sky = Some(false);
+        assert!(drops(&dark, p));
+    }
+
+    /// Fields whose data the place does not capture fail instead of passing
+    /// unconstrained: `smokey`, `structures`, block components, fluid state
+    /// properties, a snapshot field at a non-zero offset, and no origin.
+    #[test]
+    fn fields_without_captured_data_fail() {
+        for (name, condition) in [
+            ("smokey", r#""predicate":{"smokey":false}"#),
+            (
+                "structures",
+                r##""predicate":{"structures":"#minecraft:village"}"##,
+            ),
+            (
+                "components",
+                r#""predicate":{"block":{"blocks":"minecraft:oak_log","components":{"minecraft:custom_name":"x"}}}"#,
+            ),
+            (
+                "offset_block",
+                r#""predicate":{"block":{"blocks":"minecraft:oak_log"}},"offsetY":1"#,
+            ),
+        ] {
+            let data = table(name, condition);
+            assert!(
+                !drops(&data, block_place("minecraft:oak_log", &[])),
+                "{name}"
+            );
+        }
+
+        let no_origin = table("no_origin", r#""predicate":{"position":{"y":64.0}}"#);
+        assert!(!drops(
+            &no_origin,
+            LootPlace {
+                origin: None,
+                ..place()
+            }
+        ));
     }
 }
 
