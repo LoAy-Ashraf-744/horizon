@@ -144,6 +144,11 @@ pub struct NativeLootPlace {
     /// break, saved with its id and position (`saveWithFullMetadata`); a
     /// mod's block entity carries its own data and its `Items`.
     pub block_entity: Option<Tag>,
+    /// `BlockEntity.collectComponents`: the components a block predicate's
+    /// `components` map tests, explicit ones plus the type's implicit ones
+    /// (`container`, `custom_name`, `lock`, banner patterns, ...). None when
+    /// the roll has no block entity.
+    pub block_entity_components: Option<Tag>,
     /// The level the roll is in.
     pub level: Option<NativeLootLevel>,
 }

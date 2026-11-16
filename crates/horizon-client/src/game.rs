@@ -3628,12 +3628,21 @@ impl Game<'_> {
     /// what a broken block's loot sees as `LootContextParams.BLOCK_ENTITY`.
     fn loot_block_entity(&self, pos: [i32; 3], block: &str) -> Option<horizon_world::nbt::Tag> {
         let key = (pos[0], pos[1], pos[2]);
-        match self.world.block_entities.get(&key) {
-            Some(entity) => Some(horizon_client::save::encode_block_entity(
-                key, entity, block,
-            )),
-            None => spill::saved_entity(&self.world, pos),
-        }
+        let Some(entity) = self.world.block_entities.get(&key) else {
+            return spill::saved_entity(&self.world, pos);
+        };
+        // The model encode alone drops the fields Horizon keeps outside it (a
+        // container's `components`/`lock`, another type's unmodelled keys);
+        // merge the tag it was loaded with back in, as a chunk save does.
+        let source = self.world.block_entity_source(key);
+        Some(horizon_client::save::full_block_entity_data(
+            key,
+            entity,
+            block,
+            source,
+            self.world.block_names.get(&key),
+            self.world.block_lock(key),
+        ))
     }
     /// Where a loot roll at `origin` happens, for a mod's own loot kinds:
     /// the block entity it may copy from, and this level as
@@ -3649,9 +3658,14 @@ impl Game<'_> {
         // Level.canHaveWeather: sky light, no ceiling and not the End.
         let weather =
             self.world.shape.sky_light && !self.world.shape.has_ceiling && self.dim != Dim::End;
+        // `BlockEntity.collectComponents` for a block predicate's `components`.
+        let block_entity_components = block_entity.as_ref().map(|tag| {
+            horizon_world::nbt::Tag::Compound(crate::block_entity_item::collected_components(tag))
+        });
         horizon_world::loot::NativeLootPlace {
             origin: Some(origin),
             block_entity,
+            block_entity_components,
             level: Some(horizon_world::loot::NativeLootLevel {
                 dimension: self.dim.id().to_owned(),
                 game_time: self.world.game_time,

@@ -1506,7 +1506,32 @@ impl Items {
             Some(spec) => self.block_matches(spec, block),
             None => true,
         };
+        // `BlockPredicate.components`: each listed component must equal the
+        // block entity's collected value exactly (not a subset pattern), as
+        // the item side compares a stack's saved components.
+        let components_ok = c["components"].as_object().is_none_or(|components| {
+            let Some(place) = horizon_world::loot::current_native_loot_place() else {
+                return false;
+            };
+            let Some(horizon_world::nbt::Tag::Compound(have)) =
+                place.block_entity_components.as_ref()
+            else {
+                return false;
+            };
+            components.iter().all(|(id, expected)| {
+                let expected = match expected {
+                    // `CustomData.CODEC` reads an NBT compound; a data pack
+                    // may write it as JSON or as SNBT, as `NbtPredicate` does.
+                    Value::String(_) if id == "minecraft:custom_data" => {
+                        horizon_world::loot::nbt_predicate_tag(expected)
+                    }
+                    _ => Some(horizon_client_core::scoreboard::json_to_tag(expected)),
+                };
+                have.get(&horizon_world::nbt::JavaString::from(id.as_str())) == expected.as_ref()
+            })
+        });
         blocks_ok
+            && components_ok
             && c["state"]
                 .as_object()
                 .into_iter()
@@ -3656,6 +3681,48 @@ mod tests {
                 usize::from(value.unwrap_or(true))
             );
         }
+    }
+
+    /// `BlockPredicate.components`: every listed component must equal the
+    /// block entity's collected value exactly; a different value, or one the
+    /// entity does not carry, does not match.
+    #[test]
+    fn match_block_reads_the_block_entity_components() {
+        use horizon_world::loot::{NativeLootPlace, with_native_loot_place};
+        let items = Items::for_tests(HashMap::new());
+        let props = horizon_world::chunk::BlockProperties::new();
+        let collected = || {
+            horizon_world::nbt::parse_snbt(
+                r#"{"minecraft:container":[{slot:4,item:{id:"minecraft:stone",count:5}}],"minecraft:custom_name":"Loot"}"#,
+            )
+            .unwrap()
+            .0
+        };
+        let matched = |predicate: Value| {
+            let place = NativeLootPlace {
+                block_entity_components: Some(collected()),
+                ..NativeLootPlace::default()
+            };
+            with_native_loot_place(place, || {
+                items.matches_block_state(&predicate, "minecraft:chest", &props)
+            })
+        };
+        assert!(
+            matched(json!({"blocks":"minecraft:chest","components":{
+                "minecraft:container":[{"slot":4,"item":{"id":"minecraft:stone","count":5}}],
+                "minecraft:custom_name":"Loot"}})),
+            "the collected component values match"
+        );
+        assert!(
+            !matched(json!({"blocks":"minecraft:chest","components":{
+                "minecraft:container":[{"slot":4,"item":{"id":"minecraft:stone","count":6}}]}})),
+            "a different component value does not"
+        );
+        assert!(
+            !matched(json!({"blocks":"minecraft:chest","components":{
+                "minecraft:custom_data":{"k":1}}})),
+            "a component the entity does not carry does not"
+        );
     }
 
     fn ctx<'a>(
