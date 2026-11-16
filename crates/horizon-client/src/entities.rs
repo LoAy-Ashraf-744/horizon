@@ -1823,6 +1823,9 @@ pub struct ArmorStand {
     /// What a tick that changed nothing started from (see [`StandRestKey`]); None after a tick
     /// that changed something, or one that could not be proven to change nothing next time.
     pub rest: Option<StandRestKey>,
+    /// Set by every mutable access ([`crate::join_seq::Joined::touch`]), cleared when the state
+    /// sent to the network was built from the stand as it is.
+    pub sync_dirty: bool,
     /// `NAME_TAG_DISTANCE` and `BELOW_NAME_DISTANCE` from server attribute updates.
     pub nameplate: crate::entities::nameplate::NameplateDistances,
 }
@@ -2088,6 +2091,7 @@ impl ArmorStand {
             support: Default::default(),
             speed_instance: false,
             rest: None,
+            sync_dirty: true,
             nameplate: Default::default(),
         }
     }
@@ -4599,75 +4603,7 @@ mod experience_cost_tests {
     }
 }
 #[cfg(test)]
-mod orb_underwater_tests {
-    use super::*;
-
-    #[test]
-    fn matches_the_executed_java_private_method() {
-        // Actual 26.3 setUnderwaterMovement calls on server-level orbs,
-        // captured by test_orb_water_parity.py (orb-water-reference.json).
-        // Cover both horizontal signs, falling/rising, and the vertical cap.
-        let cases: [([f64; 3], [u64; 3]); 6] = [
-            (
-                [0.0, 0.0, 0.0],
-                [0x0000000000000000, 0x3f40624de0000000, 0x0000000000000000],
-            ),
-            (
-                [0.1, 0.01, -0.2],
-                [0x3fb9581066666667, 0x3f85810625ae147b, 0xbfc9581066666667],
-            ),
-            (
-                [-0.25, -0.03, 0.125],
-                [0xbfcfae1480000000, 0xbf9e353f7c851eb8, 0x3fbfae1480000000],
-            ),
-            (
-                [0.0, 0.059, 0.0],
-                [0x0000000000000000, 0x3fae76c8b46d9168, 0x0000000000000000],
-            ),
-            (
-                [0.5, 0.0595, -0.5],
-                [0x3fdfae1480000000, 0x3faeb851e0000000, 0xbfdfae1480000000],
-            ),
-            (
-                [-1.0, 0.2, 1.0],
-                [0xbfefae1480000000, 0x3faeb851e0000000, 0x3fefae1480000000],
-            ),
-        ];
-        let actual: Vec<_> = cases
-            .iter()
-            .map(|(v, _)| {
-                let mut orb = ExperienceOrb {
-                    attachment_lifetime: Default::default(),
-                    fall_distance: 0.0,
-                    rotation: [0.0, 0.0],
-                    join: Default::default(),
-                    no_gravity: false,
-                    id: 1,
-                    position: Vec3::ZERO,
-                    previous: Vec3::ZERO,
-                    velocity: Vec3::new(v[0], v[1], v[2]),
-                    value: 1,
-                    age: 0,
-                    on_ground: false,
-                    count: 1,
-                    ticks: 0,
-                    health: 5,
-                    air: 300,
-                    following: None,
-                    fire_ticks: 0,
-                };
-                orb.set_underwater_movement();
-                [
-                    orb.velocity.x.to_bits(),
-                    orb.velocity.y.to_bits(),
-                    orb.velocity.z.to_bits(),
-                ]
-            })
-            .collect();
-        let expected: Vec<_> = cases.into_iter().map(|(_, bits)| bits).collect();
-        assert_eq!(actual, expected);
-    }
-}
+mod orb_underwater_tests;
 
 #[cfg(test)]
 mod render_light_tests {
@@ -4852,11 +4788,23 @@ mod dropped_item_light_tests {
 crate::impl_joined!(
     ItemEntity,
     ExperienceOrb,
-    ArmorStand,
     Painting,
     Cushion,
     ItemFrame
 );
+impl crate::join_seq::Joined for ArmorStand {
+    fn join_seq(&self) -> crate::join_seq::JoinSeq {
+        self.join
+    }
+    fn set_join_seq(&mut self, seq: crate::join_seq::JoinSeq) {
+        self.join = seq;
+    }
+    /// Every `&mut ArmorStand` a list hands out comes through here: what the network was last
+    /// told of this stand may no longer be true.
+    fn touch(&mut self) {
+        self.sync_dirty = true;
+    }
+}
 horizon_mod_runtime::impl_attachment_lifetime!(
     ItemEntity,
     ExperienceOrb,

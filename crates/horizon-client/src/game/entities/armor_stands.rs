@@ -1039,11 +1039,19 @@ impl Game<'_> {
         for i in 0..self.armor_stands.len() {
             let at = self.armor_stands[i].position;
             if !ticking(at.x.floor() as i32, at.z.floor() as i32) {
-                self.armor_stands[i].previous = at;
-                self.armor_stands[i].previous_yaw = self.armor_stands[i].yaw;
+                // Written only if it changes: a `&mut` is a touch, and a stand out of range that
+                // rests does not need to be told again.
+                if self.armor_stands[i].previous != at
+                    || self.armor_stands[i].previous_yaw != self.armor_stands[i].yaw
+                {
+                    self.armor_stands[i].previous = at;
+                    self.armor_stands[i].previous_yaw = self.armor_stands[i].yaw;
+                }
                 continue;
             }
-            self.armor_stands[i].first_tick = false;
+            if self.armor_stands[i].first_tick {
+                self.armor_stands[i].first_tick = false;
+            }
             // Entity.baseTick: the saved invulnerability window counts down
             // (arismoko/horizon#916).
             self.tick_saved_invulnerable_time(self.armor_stands[i].id);
@@ -1073,10 +1081,16 @@ impl Game<'_> {
                 self.stand_rest_key(i, free)
             };
             if rest_key.is_some() && rest_key == self.armor_stands[i].rest {
-                let a = &mut self.armor_stands[i];
-                a.previous = a.position;
-                a.previous_yaw = a.yaw;
-                a.speed_instance = true;
+                {
+                    let a = &self.armor_stands[i];
+                    if a.previous != a.position || a.previous_yaw != a.yaw || !a.speed_instance {
+                        let a = &mut self.armor_stands[i];
+                        a.previous = a.position;
+                        a.previous_yaw = a.yaw;
+                        a.speed_instance = true;
+                    }
+                }
+                let a = &self.armor_stands[i];
                 let (id, at) = (a.id, a.position);
                 self.entity_section_step(id, [at.x, at.y, at.z], [at.x, at.y, at.z]);
                 continue;
@@ -2369,62 +2383,8 @@ fn broken_armor_stand_equipment(a: ArmorStand) -> ([i32; 3], Vec<ItemStack>) {
 #[path = "armor_stands/swap_tests.rs"]
 mod swap_tests;
 #[cfg(test)]
-mod burn_drop_tests {
-    use super::*;
-    #[test]
-    fn only_visible_non_marker_stands_are_broken_by_blasts() {
-        let mut stand = ArmorStand::new(1, Vec3::new(0.5, 64.0, 0.5), 0.0);
-        assert!(!spared_by_blast(&stand));
-        stand.invisible = true;
-        assert!(spared_by_blast(&stand));
-        stand.invisible = false;
-        stand.marker = true;
-        assert!(spared_by_blast(&stand));
-    }
-    #[test]
-    fn burnt_equipment_drops_above_the_block_and_vanishing_items_do_not_drop() {
-        let mut stand = ArmorStand::new(1, Vec3::new(-0.1, 4.8, 0.0), 0.0);
-        let kept = ItemStack::new("minecraft:diamond_boots", 1);
-        let mut vanished = ItemStack::new("minecraft:diamond_helmet", 1);
-        vanished
-            .data_mut()
-            .enchantments
-            .push(("minecraft:vanishing_curse".into(), 1));
-        stand.equipment[0] = Some(kept.clone());
-        stand.equipment[1] = Some(vanished);
-        let (pos, drops) = broken_armor_stand_equipment(stand);
-        assert_eq!(pos, [-1, 5, 0]);
-        assert_eq!(drops, vec![kept]);
-    }
-    #[test]
-    fn a_broken_stand_pops_body_and_saddle_after_the_other_six_slots() {
-        use horizon_items::equipment::{BODY, HEAD, MAINHAND, SADDLE};
-        let mut stand = ArmorStand::new(1, Vec3::new(0.5, 4.0, 0.5), 0.0);
-        let stacks: Vec<_> = [SADDLE, BODY, HEAD, MAINHAND]
-            .into_iter()
-            .map(|slot| {
-                let mut stack = ItemStack::new("minecraft:stone", 1 + slot as u32);
-                stack.damage = slot as u32;
-                stand.equipment[slot] = Some(stack.clone());
-                (slot, stack)
-            })
-            .collect();
-        let (_, drops) = broken_armor_stand_equipment(stand);
-        let order = |slots: [usize; 4]| {
-            slots
-                .map(|s| {
-                    stacks
-                        .iter()
-                        .find(|(slot, _)| *slot == s)
-                        .unwrap()
-                        .1
-                        .clone()
-                })
-                .to_vec()
-        };
-        assert_eq!(drops, order([MAINHAND, HEAD, BODY, SADDLE]));
-    }
-}
+#[path = "armor_stands/burn_drop_tests.rs"]
+mod burn_drop_tests;
 #[cfg(test)]
 mod push_tests {
     use super::super::minecarts::{CartKind, Minecart};

@@ -67,6 +67,8 @@ impl Game<'_> {
         for s in &mut self.armor_stands {
             s.rest = None;
         }
+        // The kept network entries read reloaded data too (names, equipment attributes, defaults).
+        self.stand_states.clear();
     }
 }
 
