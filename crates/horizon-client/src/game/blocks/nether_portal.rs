@@ -37,6 +37,10 @@ mod respawn_attributes;
 #[path = "tests/portal_spawn_tests.rs"]
 mod portal_spawn_tests;
 
+#[cfg(test)]
+#[path = "tests/exit_search_tests.rs"]
+mod exit_search_tests;
+
 /// `Player.getDimensionChangingDelay`.
 pub(super) const PLAYER_DELAY: i32 = 10;
 /// `VehicleEntity.getDimensionChangingDelay`: boats and minecarts.
@@ -333,6 +337,31 @@ fn preserve_arrival_cooldown(tag: &mut Tag) {
     }
 }
 
+/// What the search for an existing exit portal found
+/// (`PortalForcer.findClosestPortalPosition`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::game) enum ExitSearch {
+    /// The nearest portal, in a loaded chunk, with the rectangle around it.
+    Found(BlockPos, FoundRectangle),
+    /// The nearest portal is in a saved chunk the level has not loaded: the
+    /// search read the block from disk (`portal_blocks`), and the world would
+    /// answer air for it.
+    Unloaded(BlockPos),
+    /// No portal within reach.
+    NoPortal,
+}
+
+/// Where a plan's exit is (`NetherPortalBlock.getExitPortal`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Exit {
+    /// The rectangle the traveller lands in.
+    Found(FoundRectangle),
+    /// The nearest portal is in a chunk the level has not loaded: wait for it.
+    Waiting,
+    /// No portal was found and `createPortal` could not build one.
+    Missing,
+}
+
 impl Game<'_> {
     /// The world border's extent.
     pub(super) fn border_bounds(&self) -> BorderBounds {
@@ -500,23 +529,31 @@ impl Game<'_> {
     }
     /// `PortalForcer.findClosestPortalPosition` and the rectangle around it,
     /// for `plan` in the loaded dimension; builds nothing.
-    pub(in crate::game) fn find_exit_portal(
-        &mut self,
-        plan: &Plan,
-    ) -> Option<(BlockPos, FoundRectangle)> {
+    pub(in crate::game) fn find_exit_portal(&mut self, plan: &Plan) -> ExitSearch {
         let to_nether = plan.dim == Dim::Nether;
         let radius = if to_nether { 16 } else { 128 };
         let border = self.border_bounds();
         let portals = self.portal_blocks(plan.approximate, radius);
         let (min_section, max_section) = if to_nether { (0, 15) } else { (-4, 19) };
-        let found = closest_portal(
+        let Some(found) = closest_portal(
             &portals,
             plan.approximate,
             to_nether,
             &border,
             min_section,
             max_section,
-        )?;
+        ) else {
+            return ExitSearch::NoPortal;
+        };
+        // `PoiManager.ensureLoadedAndValid` loads every chunk the search reads,
+        // so `getBlockState(pos)` is the portal's block. Here the search also
+        // reads saved chunks; until the chunk of the portal it picked is in
+        // the level the world answers air, and the rectangle would grow over
+        // that air (`getLargestRectangleAround`). Wait for it instead.
+        let chunk = (found.x >> 4, found.z >> 4);
+        if !self.world.chunks.contains_key(&chunk) {
+            return ExitSearch::Unloaded(found);
+        }
         let state = self.world.block(found.x, found.y, found.z);
         let x_axis = self.res.behaviours().portal_axis(state).unwrap_or(true);
         let rectangle = largest_rectangle_around(
@@ -527,18 +564,28 @@ impl Game<'_> {
             21,
             |p| self.world.block(p.x, p.y, p.z) == state,
         );
-        Some((found, rectangle))
+        ExitSearch::Found(found, rectangle)
     }
     /// The exit portal of `plan` in the loaded dimension: the closest one
     /// within reach, else one built by `PortalForcer.createPortal`.
-    pub(super) fn nether_exit_portal(&mut self, plan: &Plan) -> Option<FoundRectangle> {
+    pub(super) fn nether_exit_portal(&mut self, plan: &Plan) -> Exit {
         let to_nether = plan.dim == Dim::Nether;
         let border = self.border_bounds();
-        if let Some((found, rectangle)) = self.find_exit_portal(plan) {
-            // NetherPortalBlock.getExitPortal: the ticket goes on the chunk
-            // of the portal found.
-            self.place_portal_ticket((found.x >> 4, found.z >> 4));
-            return Some(rectangle);
+        match self.find_exit_portal(plan) {
+            ExitSearch::Found(found, rectangle) => {
+                // NetherPortalBlock.getExitPortal: the ticket goes on the chunk
+                // of the portal found.
+                self.place_portal_ticket((found.x >> 4, found.z >> 4));
+                return Exit::Found(rectangle);
+            }
+            ExitSearch::Unloaded(found) => {
+                // `ensureLoadedAndValid`: this chunk is part of the search.
+                // Its ticket keeps the area loaded until the rectangle can
+                // be read; the arrival waits for it.
+                self.place_portal_ticket((found.x >> 4, found.z >> 4));
+                return Exit::Waiting;
+            }
+            ExitSearch::NoPortal => {}
         }
         let logical = if to_nether { 128 } else { 384 };
         let (approximate, x_axis) = (plan.approximate, plan.entry_x_axis);
@@ -546,20 +593,21 @@ impl Game<'_> {
             b.create_portal(level, ticks, approximate, x_axis, &border, logical)
         });
         let _ = self.process_level_events();
-        if let Some(exit) = created {
-            let dim = if to_nether {
-                "minecraft:the_nether"
-            } else {
-                "minecraft:overworld"
-            };
-            let corner = exit.min_corner;
-            self.native_portal_create(dim, [corner.x, corner.y, corner.z]);
-            // A portal built for the entity: the ticket goes on the chunk it
-            // arrives in (`TeleportTransition.PLACE_PORTAL_TICKET`).
-            let (at, _) = self.arrival(plan, exit);
-            self.place_portal_ticket(Self::chunk_of(at));
-        }
-        created
+        let Some(exit) = created else {
+            return Exit::Missing;
+        };
+        let dim = if to_nether {
+            "minecraft:the_nether"
+        } else {
+            "minecraft:overworld"
+        };
+        let corner = exit.min_corner;
+        self.native_portal_create(dim, [corner.x, corner.y, corner.z]);
+        // A portal built for the entity: the ticket goes on the chunk it
+        // arrives in (`TeleportTransition.PLACE_PORTAL_TICKET`).
+        let (at, _) = self.arrival(plan, exit);
+        self.place_portal_ticket(Self::chunk_of(at));
+        Exit::Found(exit)
     }
     /// `ChunkPos.containing`: the chunk a position is in.
     pub(super) fn chunk_of(at: Vec3) -> (i32, i32) {
@@ -1588,11 +1636,32 @@ impl Game<'_> {
             } else {
                 let exit =
                     horizon_client::spans::time("exit_portal", || self.nether_exit_portal(&plan));
-                let Some(exit) = exit else {
-                    continue;
-                };
-                let (at, rotation) = self.arrival(&plan, exit);
-                (at, rotate_y(motion, -rotation), [yaw + rotation, pitch])
+                match exit {
+                    Exit::Found(exit) => {
+                        let (at, rotation) = self.arrival(&plan, exit);
+                        (at, rotate_y(motion, -rotation), [yaw + rotation, pitch])
+                    }
+                    Exit::Waiting => {
+                        // The exit is a portal the search read from a saved
+                        // chunk: its ticket is placed; land once it is loaded.
+                        self.portals.arrivals.insert(
+                            i,
+                            Arrival {
+                                tnt_used_portal,
+                                plan,
+                                tag,
+                                transferred,
+                            },
+                        );
+                        self.portals.dirty = true;
+                        i += 1;
+                        continue;
+                    }
+                    Exit::Missing => {
+                        log::error!("Unable to create a portal, likely target out of worldborder");
+                        continue;
+                    }
+                }
             };
             set_arrival_pose(&mut tag, at, motion, [yaw, pitch], yaw - was_yaw);
             preserve_arrival_cooldown(&mut tag);
