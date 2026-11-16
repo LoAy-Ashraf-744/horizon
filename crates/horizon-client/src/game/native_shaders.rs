@@ -334,9 +334,14 @@ fn manifest_refused(path: &Path) -> Option<String> {
     }
 }
 
+/// Whether the served native material stage can read resource-pack companion maps.
+pub(super) fn needs_material_maps(manifest: &Manifest) -> bool {
+    manifest.material.is_some() && not_drawn(manifest).is_none()
+}
+
 /// Why the game doesn't draw a pack the check may still pass: `[frame] primaries = "bt2020"`
 /// isn't served yet (#14584), and neither is `[motion]`.
-pub(super) fn not_drawn(m: &Manifest) -> Option<&'static str> {
+fn not_drawn(m: &Manifest) -> Option<&'static str> {
     if m.primaries == Primaries::Bt2020 {
         return Some(
             "[frame] primaries = \"bt2020\" isn't served yet: leave it out, or set \"bt709\"",

@@ -207,7 +207,7 @@ pub(super) fn picks_material_pack(settings: &horizon_client::settings::Settings)
 fn pack_material_maps(path: &std::path::Path, native_identity: bool, classic_demand: bool) -> bool {
     if native_identity || horizon_shader_api::package::is_pack(path) {
         horizon_shader_api::Pack::read_manifest(path)
-            .is_ok_and(|m| m.material.is_some() && super::native_shaders::not_drawn(&m).is_none())
+            .is_ok_and(|m| super::native_shaders::needs_material_maps(&m))
     } else {
         classic_demand
     }
