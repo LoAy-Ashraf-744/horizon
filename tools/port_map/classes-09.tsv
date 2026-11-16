@@ -28,7 +28,7 @@ IntValueCheck.validate	skip:data		datapack validation
 InvertedLootItemCondition.invert	skip:java		static builder
 InvertedLootItemCondition.test	port	crates/horizon-world/src/loot.rs::Context::condition	inverted arm
 LocationCheck.checkLocation	skip:java		static builder
-LocationCheck.test	port	crates/horizon-world/src/loot.rs::Context::condition	gap: minor: biome lists only; block predicate and offsetY are not read here, and block loot (items.rs) passes location_check unconditionally
+LocationCheck.test	port	crates/horizon-world/src/loot.rs::Context::location_matches	position (with offset), dimension, biomes, block (blocks/state/nbt/components), light, fluid and can_see_sky read the place captured around the roll; smokey, structures, custom predicates, fluid-state properties and non-zero-offset block/light/fluid/sky fail because the place has no live world; block loot (items.rs) still passes location_check unconditionally
 LootItemCondition.Builder	skip:java		builders (and, or)
 LootItemEntityPropertyCondition.hasProperties	skip:java		static builder
 LootItemEntityPropertyCondition.test	port	crates/horizon-world/src/loot.rs::Context::condition	entity_properties arm (mob loot); the block-loot arm covers only a bare 'this' check
