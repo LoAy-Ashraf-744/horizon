@@ -325,6 +325,7 @@ mod tests {
             place: Some(std::sync::Arc::new(engine::LootPlace {
                 origin: Some([1.0, 2.0, 3.0]),
                 block_entity: Some(Tag::ByteArray(vec![7])),
+                block_entity_components: None,
                 level: Some(engine::LootLevel {
                     dimension: "test:level".into(),
                     game_time: 17,
