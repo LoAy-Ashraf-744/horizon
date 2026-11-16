@@ -1552,7 +1552,7 @@ impl Items {
             let Some(place) = horizon_world::loot::current_native_loot_place() else {
                 return false;
             };
-            let Some(horizon_world::nbt::Tag::Compound(have)) =
+            let Some(horizon_core::nbt::Tag::Compound(have)) =
                 place.block_entity_components.as_ref()
             else {
                 return false;
@@ -1566,7 +1566,7 @@ impl Items {
                     }
                     _ => Some(horizon_client_core::scoreboard::json_to_tag(expected)),
                 };
-                have.get(&horizon_world::nbt::JavaString::from(id.as_str())) == expected.as_ref()
+                have.get(&horizon_core::nbt::JavaString::from(id.as_str())) == expected.as_ref()
             })
         });
         blocks_ok
@@ -3909,20 +3909,20 @@ mod tests {
     /// entity does not carry, does not match.
     #[test]
     fn match_block_reads_the_block_entity_components() {
-        use horizon_world::loot::{NativeLootPlace, with_native_loot_place};
+        use horizon_world::loot::{LootPlace, with_native_loot_place};
         let items = Items::for_tests(HashMap::new());
         let props = horizon_world::chunk::BlockProperties::new();
         let collected = || {
-            horizon_world::nbt::parse_snbt(
+            horizon_core::nbt::parse_snbt(
                 r#"{"minecraft:container":[{slot:4,item:{id:"minecraft:stone",count:5}}],"minecraft:custom_name":"Loot"}"#,
             )
             .unwrap()
             .0
         };
         let matched = |predicate: Value| {
-            let place = NativeLootPlace {
+            let place = LootPlace {
                 block_entity_components: Some(collected()),
-                ..NativeLootPlace::default()
+                ..LootPlace::default()
             };
             with_native_loot_place(place, || {
                 items.matches_block_state(&predicate, "minecraft:chest", &props)

@@ -717,7 +717,7 @@ pub fn full_block_entity_data(
             let loaded = decode_block_entity(original).map_or_else(
                 || current.clone(),
                 |(q, e)| {
-                    let mut loaded = encode_block_entity(q, &e, block);
+                    let mut loaded = block_entity_encode::encode(q, &e, block);
                     if !matches!(
                         e,
                         crate::containers::BlockEntity::Banner(_)
@@ -7097,7 +7097,7 @@ mod tests {
     /// does not hold, merged the way a chunk save merges them.
     #[test]
     fn a_loot_chest_keeps_the_components_and_lock_it_was_loaded_with() {
-        let saved = horizon_world::nbt::parse_snbt(
+        let saved = horizon_core::nbt::parse_snbt(
             r#"{id:"minecraft:chest",x:1,y:2,z:3,CustomName:"Loot",lock:{items:"minecraft:gold_ingot"},components:{"minecraft:custom_data":{k:1}}}"#,
         )
         .unwrap()
