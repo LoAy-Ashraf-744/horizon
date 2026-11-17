@@ -1607,9 +1607,7 @@ impl<R: RandomSource> Context<'_, R> {
                 let want = match want {
                     // `CustomData.CODEC` reads a compound; a data pack may
                     // write it as JSON or as SNBT, as `NbtPredicate` does.
-                    Value::String(_) if id == "minecraft:custom_data" => {
-                        nbt_predicate_tag(want)
-                    }
+                    Value::String(_) if id == "minecraft:custom_data" => nbt_predicate_tag(want),
                     _ => json_tag(want),
                 };
                 if have.get(id.as_str()) != want.as_ref() {
