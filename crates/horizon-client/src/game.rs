@@ -2666,6 +2666,15 @@ impl Game<'_> {
             light: Some(i32::from(packed & 15).max(sky - self.sky_darken())),
             can_see_sky: Some(sky >= 15),
             fluid,
+            // `StructureManager.getStructureAt` / `getStructureWithPieceAt`
+            // at the origin: which structures' start boxes reach it, and
+            // whether one of their pieces covers it too.
+            structures: Some(
+                self.structures_reaching(pos)
+                    .into_iter()
+                    .map(|(name, piece)| horizon_world::loot::LootStructure { name, piece })
+                    .collect(),
+            ),
         }
     }
     /// `Block.getDrops` for a block a player breaks: the block's loot table

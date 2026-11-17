@@ -198,6 +198,22 @@ pub struct LootPlace {
     /// `Level.getFluidState` at [`Self::origin`]: `minecraft:water` or
     /// `minecraft:lava`; `None` is the empty fluid.
     pub fluid: Option<String>,
+    /// `StructureManager.getStructureAt` / `getStructureWithPieceAt` at
+    /// [`Self::origin`]: the structures whose start box reaches the position,
+    /// each with whether a piece of it covers the position too. None when the
+    /// place had no level to ask, so a `structures` predicate fails there.
+    pub structures: Option<Vec<LootStructure>>,
+}
+
+/// One structure whose start box reaches a loot roll's origin, as
+/// `StructureManager.getStructureAt` finds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LootStructure {
+    /// The structure's registry id (`minecraft:village_plains`).
+    pub name: String,
+    /// A piece of the start covers the position (`getStructureWithPieceAt`);
+    /// a start whose box reaches it but whose pieces do not is false.
+    pub piece: bool,
 }
 
 /// The block a loot roll happens on, as `LocationPredicate.block` sees it.
@@ -917,6 +933,8 @@ impl LootData {
             "damage_type",
             // What `location_check`'s `biomes` names.
             "worldgen/biome",
+            // What `location_check`'s `structures` names.
+            "worldgen/structure",
         ] {
             let mut raw = HashMap::new();
             load_kind(&all, &format!("tags/{registry}"), &mut raw)?;
@@ -1542,9 +1560,22 @@ impl<R: RandomSource> Context<'_, R> {
         if predicate.get("smokey").is_some_and(|s| !s.is_null()) {
             return false;
         }
-        // Structure lookups need the level's structure manager.
-        if predicate.get("structures").is_some_and(|s| !s.is_null()) {
-            return false;
+        if let Some(structures) = predicate.get("structures").filter(|s| !s.is_null()) {
+            // `LocationPredicate.structures`: `getStructureWithPieceAt` finds
+            // a start of a named structure with a piece at the position.
+            let Some(place) = origin_only else {
+                return false;
+            };
+            let Some(here) = place.structures.as_ref() else {
+                return false;
+            };
+            let wanted = self.data.holder_set("worldgen/structure", structures);
+            if !here
+                .iter()
+                .any(|s| s.piece && wanted.iter().any(|w| same_id(w, &s.name)))
+            {
+                return false;
+            }
         }
         true
     }
@@ -3800,6 +3831,13 @@ mod location_check_fields_tests {
             r#"{"values":["minecraft:oak_log"]}"#,
         )
         .unwrap();
+        let structures = root.join("data/minecraft/tags/worldgen/structure");
+        fs::create_dir_all(&structures).unwrap();
+        fs::write(
+            structures.join("village.json"),
+            r#"{"values":["minecraft:village_plains","minecraft:village_taiga"]}"#,
+        )
+        .unwrap();
         fs::write(root.join("items.json"), "{}").unwrap();
         let defaults = crate::item_defaults::read(&root).unwrap();
         let data = LootData::load(&root, &PackOverlay::NONE, &defaults).unwrap();
@@ -4059,17 +4097,70 @@ mod location_check_fields_tests {
         assert!(drops(&dark, p));
     }
 
+    /// `LocationPredicate.structures` reads `getStructureWithPieceAt`: the
+    /// structures whose start box reaches the position and whose pieces cover
+    /// it too.
+    #[test]
+    fn structures_read_the_structures_with_a_piece_at_the_place() {
+        let data = table(
+            "structures",
+            r##""predicate":{"structures":"#minecraft:village"}"##,
+        );
+        let mut p = place();
+        // A village start with a piece at the origin matches the tag.
+        p.structures = Some(vec![LootStructure {
+            name: "minecraft:village_plains".to_owned(),
+            piece: true,
+        }]);
+        assert!(drops(&data, p.clone()));
+        // A start whose box reaches the origin but no piece covers it is
+        // `getStructureAt` without `getStructureWithPieceAt`: no match.
+        p.structures = Some(vec![LootStructure {
+            name: "minecraft:village_plains".to_owned(),
+            piece: false,
+        }]);
+        assert!(!drops(&data, p.clone()));
+        // Outside: a structure with a piece there, but not a village.
+        p.structures = Some(vec![LootStructure {
+            name: "minecraft:shipwreck".to_owned(),
+            piece: true,
+        }]);
+        assert!(!drops(&data, p.clone()));
+        // The place had no level to ask: the predicate fails instead of
+        // passing unconstrained.
+        p.structures = None;
+        assert!(!drops(&data, p.clone()));
+        // A single id and a bare path match too.
+        let id = table(
+            "structures_id",
+            r#""predicate":{"structures":"minecraft:village_plains"}"#,
+        );
+        p.structures = Some(vec![LootStructure {
+            name: "minecraft:village_plains".to_owned(),
+            piece: true,
+        }]);
+        assert!(drops(&id, p.clone()));
+        let bare = table(
+            "structures_bare",
+            r#""predicate":{"structures":"village_plains"}"#,
+        );
+        assert!(drops(&bare, p.clone()));
+        // The place captured only the origin, so an offset cannot be
+        // answered.
+        let offset = table(
+            "structures_offset",
+            r##""predicate":{"structures":"#minecraft:village"},"offsetY":1"##,
+        );
+        assert!(!drops(&offset, p));
+    }
+
     /// Fields whose data the place does not capture fail instead of passing
-    /// unconstrained: `smokey`, `structures`, uncollected components, fluid state
+    /// unconstrained: `smokey`, uncollected components, fluid state
     /// properties, a snapshot field at a non-zero offset, and no origin.
     #[test]
     fn fields_without_captured_data_fail() {
         for (name, condition) in [
             ("smokey", r#""predicate":{"smokey":false}"#),
-            (
-                "structures",
-                r##""predicate":{"structures":"#minecraft:village"}"##,
-            ),
             (
                 "components",
                 r#""predicate":{"block":{"blocks":"minecraft:oak_log","components":{"minecraft:custom_name":"x"}}}"#,
