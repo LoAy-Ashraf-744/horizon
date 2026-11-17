@@ -1560,6 +1560,10 @@ impl Items {
         // block entity's collected value exactly (not a subset pattern), as
         // the item side compares a stack's saved components.
         let components_ok = c["components"].as_object().is_none_or(|components| {
+            // `BlockPredicate.matchesBlockEntity` skips an empty matcher.
+            if components.is_empty() {
+                return true;
+            }
             let Some(place) = horizon_world::loot::current_native_loot_place() else {
                 return false;
             };
@@ -3913,6 +3917,29 @@ mod tests {
                 usize::from(value.unwrap_or(true))
             );
         }
+    }
+
+    /// `BlockPredicate.matchesBlockEntity`: an empty component matcher never
+    /// requires a block entity, but a nonempty matcher does.
+    #[test]
+    fn match_block_empty_components_need_no_block_entity() {
+        let items = Items::for_tests(HashMap::new());
+        let props = horizon_world::chunk::BlockProperties::new();
+        assert!(items.matches_block_state(
+            &json!({"blocks":"minecraft:stone","components":{}}),
+            "minecraft:stone",
+            &props,
+        ));
+        assert!(!items.matches_block_state(
+            &json!({"blocks":"minecraft:chest","components":{}}),
+            "minecraft:stone",
+            &props,
+        ));
+        assert!(!items.matches_block_state(
+            &json!({"blocks":"minecraft:stone","components":{"minecraft:custom_name":"Loot"}}),
+            "minecraft:stone",
+            &props,
+        ));
     }
 
     /// `BlockPredicate.components`: every listed component must equal the
