@@ -8,7 +8,11 @@ impl Game<'_> {
     /// a key does not cover: a mod listening to entity moves, a cart or an obstacle entity about, a dynamic
     /// block shape in the world, worn equipment (a compass reads the world), a rider, a box of
     /// more than eight block sections.
-    pub(super) fn stand_rest_key(&self, i: usize, obstacle_free: bool) -> Option<horizon_client::entities::StandRestKey> {
+    pub(super) fn stand_rest_key(
+        &self,
+        i: usize,
+        obstacle_free: bool,
+    ) -> Option<horizon_client::entities::StandRestKey> {
         let a = &self.armor_stands[i];
         if !obstacle_free
             || mod_api::__private::listened(mod_api::HookId::EntityMove)
@@ -33,8 +37,16 @@ impl Game<'_> {
         let b = a.bounds();
         let (lo, hi) = (b.min_position(), b.max_position());
         let blocks = self.world.region_stamp(
-            [lo.x.floor() as i32 - 2, lo.y.floor() as i32 - 2, lo.z.floor() as i32 - 2],
-            [hi.x.floor() as i32 + 2, hi.y.floor() as i32 + 2, hi.z.floor() as i32 + 2],
+            [
+                lo.x.floor() as i32 - 2,
+                lo.y.floor() as i32 - 2,
+                lo.z.floor() as i32 - 2,
+            ],
+            [
+                hi.x.floor() as i32 + 2,
+                hi.y.floor() as i32 + 2,
+                hi.z.floor() as i32 + 2,
+            ],
         )?;
         let bits = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
         Some(horizon_client::entities::StandRestKey {
@@ -84,8 +96,16 @@ mod stand_rest_tests {
             .iter()
             .map(|a| {
                 (
-                    [a.position.x.to_bits(), a.position.y.to_bits(), a.position.z.to_bits()],
-                    [a.velocity.x.to_bits(), a.velocity.y.to_bits(), a.velocity.z.to_bits()],
+                    [
+                        a.position.x.to_bits(),
+                        a.position.y.to_bits(),
+                        a.position.z.to_bits(),
+                    ],
+                    [
+                        a.velocity.x.to_bits(),
+                        a.velocity.y.to_bits(),
+                        a.velocity.z.to_bits(),
+                    ],
                     a.on_ground,
                     a.fire_ticks,
                     a.health.to_bits(),
@@ -114,30 +134,38 @@ mod stand_rest_tests {
                 horizon_client::motion::PlayerMotion::new(g.motion, Vec3::new(14.5, 200.0, 14.5))
                     .unwrap(),
             );
-            g.block_ticks.add_empty_chunk(BlockPos::new(0, 0, 0).chunk()).unwrap();
+            g.block_ticks
+                .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+                .unwrap();
             assert!(g.run_command("forceload add 0 0"));
             assert!(g.run_command("fill 0 199 0 15 199 15 stone"));
             for (x, z) in [(3, 3), (8, 8), (12, 4)] {
-                assert!(g.run_command(&format!("summon armor_stand {x}.5 200.0 {z}.5 {{Health:20f}}")));
+                assert!(g.run_command(&format!(
+                    "summon armor_stand {x}.5 200.0 {z}.5 {{Health:20f}}"
+                )));
             }
         }
         let mut compared = 0;
-        let mut run = |a: &mut crate::game::Game<'_>, b: &mut crate::game::Game<'_>, n: u32, what: &str| {
-            for t in 0..n {
-                a.tick_armor_stands().unwrap();
-                {
-                    // The full tick: the memo is cleared first, so nothing is skipped.
-                    for s in &mut b.armor_stands {
-                        s.rest = None;
+        let mut run =
+            |a: &mut crate::game::Game<'_>, b: &mut crate::game::Game<'_>, n: u32, what: &str| {
+                for t in 0..n {
+                    a.tick_armor_stands().unwrap();
+                    {
+                        // The full tick: the memo is cleared first, so nothing is skipped.
+                        for s in &mut b.armor_stands {
+                            s.rest = None;
+                        }
+                        b.tick_armor_stands().unwrap();
                     }
-                    b.tick_armor_stands().unwrap();
+                    assert_eq!(snap(a), snap(b), "{what}, tick {t}");
+                    compared += 1;
                 }
-                assert_eq!(snap(a), snap(b), "{what}, tick {t}");
-                compared += 1;
-            }
-        };
+            };
         run(&mut a, &mut b, 40, "resting on stone");
-        assert!(a.armor_stands.iter().any(|s| s.rest.is_some()), "the skip is exercised");
+        assert!(
+            a.armor_stands.iter().any(|s| s.rest.is_some()),
+            "the skip is exercised"
+        );
         for g in [&mut a, &mut b] {
             assert!(g.run_command("setblock 3 199 3 air"));
         }
@@ -155,13 +183,22 @@ mod stand_rest_tests {
         }
         run(&mut a, &mut b, 40, "lava gone");
         // A real `/reload` in the middle: every stand forgets its key, then the script goes on.
-        assert!(a.armor_stands.iter().any(|s| s.rest.is_some()), "resting before the reload");
+        assert!(
+            a.armor_stands.iter().any(|s| s.rest.is_some()),
+            "resting before the reload"
+        );
         for g in [&mut a, &mut b] {
             assert!(g.run_command("reload"));
         }
-        assert!(a.armor_stands.iter().all(|s| s.rest.is_none()), "a reload forgets every key");
+        assert!(
+            a.armor_stands.iter().all(|s| s.rest.is_none()),
+            "a reload forgets every key"
+        );
         run(&mut a, &mut b, 30, "after a reload");
-        assert!(a.armor_stands.iter().any(|s| s.rest.is_some()), "the skip resumes");
+        assert!(
+            a.armor_stands.iter().any(|s| s.rest.is_some()),
+            "the skip resumes"
+        );
         for g in [&mut a, &mut b] {
             g.armor_stands[2].velocity.x += 0.4;
         }

@@ -2380,11 +2380,11 @@ fn broken_armor_stand_equipment(a: ArmorStand) -> ([i32; 3], Vec<ItemStack>) {
     (pos, drops)
 }
 #[cfg(test)]
-#[path = "armor_stands/swap_tests.rs"]
-mod swap_tests;
-#[cfg(test)]
 #[path = "armor_stands/burn_drop_tests.rs"]
 mod burn_drop_tests;
+#[cfg(test)]
+#[path = "armor_stands/swap_tests.rs"]
+mod swap_tests;
 #[cfg(test)]
 mod push_tests {
     use super::super::minecarts::{CartKind, Minecart};

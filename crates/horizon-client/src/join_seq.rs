@@ -816,7 +816,10 @@ impl<T: Joined> JoinList<T> {
     /// A panicking predicate retains its current row and edits, without emitting
     /// its removal. Only yielded rows retire, using their pre-predicate identity.
     /// No journal lock is held while the predicate runs.
-    pub fn extract_if_mut(&mut self, mut take: impl FnMut(&mut T) -> bool) -> impl Iterator<Item = T> {
+    pub fn extract_if_mut(
+        &mut self,
+        mut take: impl FnMut(&mut T) -> bool,
+    ) -> impl Iterator<Item = T> {
         self.extract_where(move |t| {
             t.touch();
             take(t)

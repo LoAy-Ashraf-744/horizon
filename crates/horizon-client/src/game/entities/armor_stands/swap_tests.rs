@@ -51,13 +51,11 @@ fn survival_swap_gives_the_worn_piece_or_empties_the_hand() {
 fn a_larger_stack_wears_one_and_sends_the_old_piece_to_the_inventory() {
     // Armour stacks past one only with a max_stack_size component.
     let worn = Some(stack("minecraft:leather_helmet", 1));
-    let swap =
-        swap_with_equipment_slot(&stack("minecraft:golden_helmet", 3), worn.clone(), false);
+    let swap = swap_with_equipment_slot(&stack("minecraft:golden_helmet", 3), worn.clone(), false);
     assert_eq!(swap.worn, stack("minecraft:golden_helmet", 1));
     assert_eq!(swap.hand, Some(stack("minecraft:golden_helmet", 2)));
     assert_eq!(swap.to_inventory, worn);
-    let swap =
-        swap_with_equipment_slot(&stack("minecraft:golden_helmet", 3), worn.clone(), true);
+    let swap = swap_with_equipment_slot(&stack("minecraft:golden_helmet", 3), worn.clone(), true);
     assert_eq!(swap.hand, Some(stack("minecraft:golden_helmet", 3)));
     assert_eq!(swap.to_inventory, worn);
 }

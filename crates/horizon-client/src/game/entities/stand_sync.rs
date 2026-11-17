@@ -20,7 +20,9 @@ mod stand_sync_flag_tests {
             horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(14.5, 200.0, 14.5))
                 .unwrap(),
         );
-        game.block_ticks.add_empty_chunk(BlockPos::new(0, 0, 0).chunk()).unwrap();
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
         // Above the guest's fixed entity id.
         game.next_entity = 100;
         let _rx = crate::game::lan::world_spawn_sync_tests::host_for(&mut game);
@@ -60,12 +62,21 @@ mod stand_sync_flag_tests {
             assert!(game.run_command(command), "{command}");
             if command == "reload" {
                 // Every kept entry is dropped and every stand rebuilt.
-                assert!(game.stand_states.is_empty(), "a reload clears the kept entries");
-                assert!(game.armor_stands.iter().all(|a| a.sync_dirty), "and marks every stand dirty");
+                assert!(
+                    game.stand_states.is_empty(),
+                    "a reload clears the kept entries"
+                );
+                assert!(
+                    game.armor_stands.iter().all(|a| a.sync_dirty),
+                    "and marks every stand dirty"
+                );
             }
             step(&mut game, 12, &mut clean);
         }
-        assert!(clean > 100, "stands were clean (and verified) most ticks: {clean}");
+        assert!(
+            clean > 100,
+            "stands were clean (and verified) most ticks: {clean}"
+        );
         crate::game::lan_entities::VERIFY_STAND_STATES
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }

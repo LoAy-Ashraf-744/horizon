@@ -4785,13 +4785,7 @@ mod dropped_item_light_tests {
         assert_eq!(burning.render_light(light(0, 0)), ((15 * 16) << 8) as u32);
     }
 }
-crate::impl_joined!(
-    ItemEntity,
-    ExperienceOrb,
-    Painting,
-    Cushion,
-    ItemFrame
-);
+crate::impl_joined!(ItemEntity, ExperienceOrb, Painting, Cushion, ItemFrame);
 impl crate::join_seq::Joined for ArmorStand {
     fn join_seq(&self) -> crate::join_seq::JoinSeq {
         self.join
