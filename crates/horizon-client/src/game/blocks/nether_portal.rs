@@ -339,16 +339,67 @@ fn preserve_arrival_cooldown(tag: &mut Tag) {
 
 /// What the search for an existing exit portal found
 /// (`PortalForcer.findClosestPortalPosition`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::game) enum ExitSearch {
-    /// The nearest portal, in a loaded chunk, with the rectangle around it.
+    /// The nearest portal, with every chunk its rectangle can touch loaded,
+    /// and the rectangle around it.
     Found(BlockPos, FoundRectangle),
-    /// The nearest portal is in a saved chunk the level has not loaded: the
-    /// search read the block from disk (`portal_blocks`), and the world would
-    /// answer air for it.
-    Unloaded(BlockPos),
+    /// The nearest portal's rectangle reaches a chunk the level has not
+    /// loaded: the search read the block from disk (`portal_blocks`), and the
+    /// world would answer air there (`getLargestRectangleAround`).
+    Unloaded(BlockPos, Vec<(i32, i32)>),
     /// No portal within reach.
     NoPortal,
+}
+
+/// The chunks `largest_rectangle_around` can touch around `found`: the
+/// rectangle contains `found`, so its widest row is the horizontal run of
+/// portal blocks through `found` at its own height. Until the portal axis is
+/// read from its loaded chunk, both horizontal runs count.
+fn exit_rectangle_chunks(portals: &[BlockPos], found: BlockPos) -> Vec<(i32, i32)> {
+    let mut chunks = vec![(found.x >> 4, found.z >> 4)];
+    for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+        let mut p = found;
+        for _ in 0..21 {
+            p = BlockPos::new(p.x + dx, p.y, p.z + dz);
+            if !portals.contains(&p) {
+                break;
+            }
+            let chunk = (p.x >> 4, p.z >> 4);
+            if !chunks.contains(&chunk) {
+                chunks.push(chunk);
+            }
+        }
+    }
+    chunks.sort_unstable();
+    chunks
+}
+
+/// The chunks `rectangle` covers: `axis1_size` runs along X for an X-axis
+/// portal, else along Z; the other horizontal axis is the portal plane.
+fn rectangle_chunks(rectangle: FoundRectangle, x_axis: bool) -> Vec<(i32, i32)> {
+    let (x0, x1, z0, z1) = if x_axis {
+        (
+            rectangle.min_corner.x,
+            rectangle.min_corner.x + rectangle.axis1_size - 1,
+            rectangle.min_corner.z,
+            rectangle.min_corner.z,
+        )
+    } else {
+        (
+            rectangle.min_corner.x,
+            rectangle.min_corner.x,
+            rectangle.min_corner.z,
+            rectangle.min_corner.z + rectangle.axis1_size - 1,
+        )
+    };
+    let mut chunks = Vec::new();
+    for z in (z0 >> 4)..=(z1 >> 4) {
+        for x in (x0 >> 4)..=(x1 >> 4) {
+            chunks.push((x, z));
+        }
+    }
+    chunks
 }
 
 /// Where a plan's exit is (`NetherPortalBlock.getExitPortal`).
@@ -356,7 +407,8 @@ pub(in crate::game) enum ExitSearch {
 pub(super) enum Exit {
     /// The rectangle the traveller lands in.
     Found(FoundRectangle),
-    /// The nearest portal is in a chunk the level has not loaded: wait for it.
+    /// The nearest portal's rectangle reaches a chunk that is not loaded or
+    /// lit: wait for it.
     Waiting,
     /// No portal was found and `createPortal` could not build one.
     Missing,
@@ -547,12 +599,16 @@ impl Game<'_> {
         };
         // `PoiManager.ensureLoadedAndValid` loads every chunk the search reads,
         // so `getBlockState(pos)` is the portal's block. Here the search also
-        // reads saved chunks; until the chunk of the portal it picked is in
-        // the level the world answers air, and the rectangle would grow over
-        // that air (`getLargestRectangleAround`). Wait for it instead.
-        let chunk = (found.x >> 4, found.z >> 4);
-        if !self.world.chunks.contains_key(&chunk) {
-            return ExitSearch::Unloaded(found);
+        // reads saved chunks; until every chunk the rectangle can touch is in
+        // the level the world answers air for the others, and the rectangle
+        // would be clipped to the loaded part (`getLargestRectangleAround`).
+        // Wait for all of them instead.
+        let chunks = exit_rectangle_chunks(&portals, found);
+        if chunks
+            .iter()
+            .any(|&(x, z)| !self.world.chunks.contains_key(&(x, z)))
+        {
+            return ExitSearch::Unloaded(found, chunks);
         }
         let state = self.world.block(found.x, found.y, found.z);
         let x_axis = self.res.behaviours().portal_axis(state).unwrap_or(true);
@@ -573,16 +629,28 @@ impl Game<'_> {
         let border = self.border_bounds();
         match self.find_exit_portal(plan) {
             ExitSearch::Found(found, rectangle) => {
-                // NetherPortalBlock.getExitPortal: the ticket goes on the chunk
-                // of the portal found.
-                self.place_portal_ticket((found.x >> 4, found.z >> 4));
+                // NetherPortalBlock.getExitPortal: the tickets go on the
+                // chunks of the portal found. The exit can be far from
+                // `plan.approximate`, so the arrival waits for the light of
+                // the rectangle's own chunks, not only the approximate area.
+                let state = self.world.block(found.x, found.y, found.z);
+                let x_axis = self.res.behaviours().portal_axis(state).unwrap_or(true);
+                let chunks = rectangle_chunks(rectangle, x_axis);
+                for &chunk in &chunks {
+                    self.place_portal_ticket(chunk);
+                }
+                if !chunks.iter().all(|&(x, z)| self.streaming.is_lit(x, z)) {
+                    return Exit::Waiting;
+                }
                 return Exit::Found(rectangle);
             }
-            ExitSearch::Unloaded(found) => {
-                // `ensureLoadedAndValid`: this chunk is part of the search.
-                // Its ticket keeps the area loaded until the rectangle can
-                // be read; the arrival waits for it.
-                self.place_portal_ticket((found.x >> 4, found.z >> 4));
+            ExitSearch::Unloaded(_, chunks) => {
+                // `ensureLoadedAndValid`: these chunks are part of the search.
+                // Their tickets keep the area loaded until the rectangle can
+                // be read; the arrival waits for them.
+                for chunk in chunks {
+                    self.place_portal_ticket(chunk);
+                }
                 return Exit::Waiting;
             }
             ExitSearch::NoPortal => {}
@@ -1638,8 +1706,9 @@ impl Game<'_> {
                         (at, rotate_y(motion, -rotation), [yaw + rotation, pitch])
                     }
                     Exit::Waiting => {
-                        // The exit is a portal the search read from a saved
-                        // chunk: its ticket is placed; land once it is loaded.
+                        // The exit's rectangle reaches a chunk that is not
+                        // loaded or lit: its tickets are placed; land once
+                        // they are ready.
                         self.portals.arrivals.insert(
                             i,
                             Arrival {
