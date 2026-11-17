@@ -11,7 +11,7 @@ use horizon_client::{
 use std::sync::Arc;
 
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn an_exit_portal_in_an_unloaded_chunk_waits_for_it() {
     let mut resources = None;
     let mut game = server_game(&mut resources);
