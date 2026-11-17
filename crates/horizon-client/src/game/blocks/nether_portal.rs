@@ -355,19 +355,20 @@ pub(in crate::game) enum ExitSearch {
 /// The chunks `largest_rectangle_around` can touch around `found`: the
 /// rectangle contains `found`, so its widest row is the horizontal run of
 /// portal blocks through `found` at its own height. Until the portal axis is
-/// read from its loaded chunk, both horizontal runs count.
+/// read from its loaded chunk, both horizontal runs count. The position that
+/// ends a run is read to stop the rectangle, so its chunk is included too.
 fn exit_rectangle_chunks(portals: &[BlockPos], found: BlockPos) -> Vec<(i32, i32)> {
     let mut chunks = vec![(found.x >> 4, found.z >> 4)];
     for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
         let mut p = found;
         for _ in 0..21 {
             p = BlockPos::new(p.x + dx, p.y, p.z + dz);
-            if !portals.contains(&p) {
-                break;
-            }
             let chunk = (p.x >> 4, p.z >> 4);
             if !chunks.contains(&chunk) {
                 chunks.push(chunk);
+            }
+            if !portals.contains(&p) {
+                break;
             }
         }
     }

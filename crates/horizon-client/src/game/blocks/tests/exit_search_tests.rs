@@ -56,18 +56,18 @@ fn an_exit_portal_in_an_unloaded_chunk_waits_for_it() {
         .insert_remote(&mut game.world, Chunk::empty(2, 0));
     for width in 0..2 {
         for height in 0..3 {
-            game.world.set(32 + width, 64 + height, 0, portal).unwrap();
+            game.world.set(33 + width, 64 + height, 8, portal).unwrap();
         }
     }
     game.save_level(true).unwrap();
     let saved = game.world.chunks.remove(&(2, 0)).unwrap();
     assert!(!game.world.chunks.contains_key(&(2, 0)));
-    let plan = plan_at(BlockPos::new(32, 64, 0));
+    let plan = plan_at(BlockPos::new(33, 64, 8));
     // The search reads the portal from the saved chunk, so it cannot read
     // its rectangle from the level yet.
     assert_eq!(
         game.find_exit_portal(&plan),
-        ExitSearch::Unloaded(BlockPos::new(32, 64, 0), vec![(2, 0)])
+        ExitSearch::Unloaded(BlockPos::new(33, 64, 8), vec![(2, 0)])
     );
     // The exit waits for that chunk, with its portal ticket, and builds
     // nothing (`ensureLoadedAndValid`).
@@ -82,7 +82,7 @@ fn an_exit_portal_in_an_unloaded_chunk_waits_for_it() {
     let ExitSearch::Found(found, rectangle) = game.find_exit_portal(&plan) else {
         panic!("the loaded portal is read");
     };
-    assert_eq!(found, BlockPos::new(32, 64, 0));
+    assert_eq!(found, BlockPos::new(33, 64, 8));
     assert_eq!((rectangle.axis1_size, rectangle.axis2_size), (2, 3));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -112,7 +112,7 @@ fn an_exit_portal_spanning_two_chunks_waits_for_both() {
         .insert_remote(&mut game.world, Chunk::empty(2, 0));
     for width in 0..2 {
         for height in 0..3 {
-            game.world.set(31 + width, 64 + height, 0, portal).unwrap();
+            game.world.set(31 + width, 64 + height, 8, portal).unwrap();
         }
     }
     game.save_level(true).unwrap();
@@ -122,12 +122,12 @@ fn an_exit_portal_spanning_two_chunks_waits_for_both() {
     let gone: FxHashSet<(i32, i32)> = [(2, 0)].into_iter().collect();
     game.streaming.forget_columns(&mut game.world, &gone);
     assert!(!game.world.chunks.contains_key(&(2, 0)));
-    let plan = plan_at(BlockPos::new(31, 64, 0));
+    let plan = plan_at(BlockPos::new(31, 64, 8));
     // The rectangle can reach into the saved neighbour, whose blocks answer
     // air until it loads: both chunks wait.
     assert_eq!(
         game.find_exit_portal(&plan),
-        ExitSearch::Unloaded(BlockPos::new(31, 64, 0), vec![(1, 0), (2, 0)])
+        ExitSearch::Unloaded(BlockPos::new(31, 64, 8), vec![(1, 0), (2, 0)])
     );
     assert_eq!(game.nether_exit_portal(&plan), Exit::Waiting);
     for chunk in [(1, 0), (2, 0)] {
@@ -143,9 +143,27 @@ fn an_exit_portal_spanning_two_chunks_waits_for_both() {
     let ExitSearch::Found(found, rectangle) = game.find_exit_portal(&plan) else {
         panic!("the fully loaded portal is read");
     };
-    assert_eq!(found, BlockPos::new(31, 64, 0));
-    assert_eq!(rectangle.min_corner, BlockPos::new(31, 64, 0));
+    assert_eq!(found, BlockPos::new(31, 64, 8));
+    assert_eq!(rectangle.min_corner, BlockPos::new(31, 64, 8));
     assert_eq!((rectangle.axis1_size, rectangle.axis2_size), (2, 3));
     assert_eq!(game.nether_exit_portal(&plan), Exit::Found(rectangle));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The walk stops at the first position missing from `portals`, and that
+/// position is read by `largest_rectangle_around` to end the rectangle. When
+/// the portal-block scan was cut short, the position can be portal in the
+/// level, so its chunk has to load before the rectangle is measured.
+#[test]
+fn the_chunk_of_the_first_non_portal_position_waits() {
+    let found = BlockPos::new(30, 64, 8);
+    // A run the scan cut at x=47: the rectangle continues to x=50 once
+    // chunk (3, 0) is loaded.
+    let portals: Vec<_> = (31..=47)
+        .map(|x| BlockPos::new(x, 64, 8))
+        .collect();
+    assert_eq!(
+        exit_rectangle_chunks(&portals, found),
+        vec![(1, 0), (2, 0), (3, 0)]
+    );
 }
