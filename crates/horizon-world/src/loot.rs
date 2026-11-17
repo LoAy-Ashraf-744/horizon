@@ -1617,14 +1617,10 @@ impl<R: RandomSource> Context<'_, R> {
         }
         // A custom predicate needs the predicate registry, which the place
         // does not carry; only an empty map holds.
-        if predicate
+        !predicate
             .get("predicates")
             .and_then(Value::as_object)
             .is_some_and(|p| !p.is_empty())
-        {
-            return false;
-        }
-        true
     }
     /// A number provider. An unknown type gives 0, as in items.rs `number`
     /// (a data pack's typo yields nothing rather than a full roll).
