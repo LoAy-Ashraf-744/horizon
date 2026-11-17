@@ -2628,16 +2628,21 @@ impl Game<'_> {
             horizon_core::nbt::Tag::Compound(crate::block_entity_item::collected_components(tag))
         });
         let pos = origin.map(|v| v.floor() as i32);
+        // `Level.isLoaded`: outside the build height or in an unloaded chunk
+        // there is no block, light or fluid to read; those facts stay unset
+        // so a predicate asking for them fails instead of reading the air and
+        // full light an absent chunk falls back to. A caller that passes the
+        // state a block broke with keeps it.
+        let loaded = self.world.is_loaded_at(pos[0], pos[1], pos[2]);
         // A broken block's own drops still name it after the removal, so the
         // caller passes the state it broke; every other roll reads the block
         // it started on.
-        let state = at_state.unwrap_or_else(|| self.world.block(pos[0], pos[1], pos[2]));
-        let facts = self.res.facts().get(state);
-        let packed = self.world.light(pos[0], pos[1], pos[2]);
-        let sky = i32::from(packed >> 4);
-        let fluid = match facts.fluid {
-            crate::blocks::Fluid::Water => Some("minecraft:water".to_owned()),
-            crate::blocks::Fluid::Lava => Some("minecraft:lava".to_owned()),
+        let state = at_state.or_else(|| loaded.then(|| self.world.block(pos[0], pos[1], pos[2])));
+        let facts = state.map(|state| self.res.facts().get(state));
+        let packed = loaded.then(|| self.world.light(pos[0], pos[1], pos[2]));
+        let fluid = match facts.map(|facts| facts.fluid) {
+            Some(crate::blocks::Fluid::Water) => Some("minecraft:water".to_owned()),
+            Some(crate::blocks::Fluid::Lava) => Some("minecraft:lava".to_owned()),
             _ => None,
         };
         horizon_world::loot::LootPlace {
@@ -2651,8 +2656,8 @@ impl Game<'_> {
                 raining: weather && rain > 0.2,
                 thundering: weather && thunder > 0.9,
             }),
-            block: Some(horizon_world::loot::LootBlockState {
-                name: facts.name.to_string(),
+            block: state.map(|state| horizon_world::loot::LootBlockState {
+                name: self.res.facts().get(state).name.to_string(),
                 properties: self
                     .pack
                     .assets
@@ -2663,18 +2668,21 @@ impl Game<'_> {
             }),
             // Level.getMaxLocalRawBrightness: block light, or sky light less
             // the sky darkening.
-            light: Some(i32::from(packed & 15).max(sky - self.sky_darken())),
-            can_see_sky: Some(sky >= 15),
+            light: packed.map(|packed| {
+                let sky = i32::from(packed >> 4);
+                i32::from(packed & 15).max(sky - self.sky_darken())
+            }),
+            can_see_sky: packed.map(|packed| packed >> 4 >= 15),
             fluid,
             // `StructureManager.getStructureAt` / `getStructureWithPieceAt`
             // at the origin: which structures' start boxes reach it, and
             // whether one of their pieces covers it too.
-            structures: Some(
+            structures: loaded.then(|| {
                 self.structures_reaching(pos)
                     .into_iter()
                     .map(|(name, piece)| horizon_world::loot::LootStructure { name, piece })
-                    .collect(),
-            ),
+                    .collect()
+            }),
         }
     }
     /// `Block.getDrops` for a block a player breaks: the block's loot table

@@ -1358,6 +1358,239 @@ struct Context<'a, R> {
 }
 type Sink<'s, R> = dyn FnMut(&mut Context<'_, R>, LootStack) + 's;
 
+/// `LocationCheck.test` / `LocationPredicate.matches` against a captured
+/// [`LootPlace`]: the predicate at `ORIGIN + offset`. A field whose data the
+/// roll did not capture fails; it is never taken as unconstrained.
+/// `holder_set` resolves a published HolderSet (`#tag`, an id or a list of
+/// ids) for the registries a location check names. A roll with neither an
+/// origin nor a biome has nothing to test: no match.
+pub fn evaluate_location_check(
+    c: &Value,
+    place: Option<&LootPlace>,
+    biome: Option<&str>,
+    holder_set: &dyn Fn(&str, &Value) -> Vec<String>,
+) -> bool {
+    let origin = place.and_then(|p| p.origin);
+    // `LocationCheck.test`: no ORIGIN, no match. The main engine's
+    // fishing roll names its biome without a place, so a biome-only
+    // predicate keeps matching there.
+    if origin.is_none() && biome.is_none() {
+        return false;
+    }
+    let predicate = &c["predicate"];
+    if predicate.is_null() {
+        return true;
+    }
+    let Some(predicate) = predicate.as_object() else {
+        return false;
+    };
+    let offset = [
+        c["offsetX"].as_i64().unwrap_or(0),
+        c["offsetY"].as_i64().unwrap_or(0),
+        c["offsetZ"].as_i64().unwrap_or(0),
+    ];
+    let at = origin.map(|p| {
+        [
+            p[0] + offset[0] as f64,
+            p[1] + offset[1] as f64,
+            p[2] + offset[2] as f64,
+        ]
+    });
+    if let Some(position) = predicate.get("position").filter(|p| !p.is_null()) {
+        let Some(at) = at else { return false };
+        // `LocationPredicate.PositionPredicate.matches`.
+        if !bounds_f(&position["x"], at[0])
+            || !bounds_f(&position["y"], at[1])
+            || !bounds_f(&position["z"], at[2])
+        {
+            return false;
+        }
+    }
+    if let Some(dimension) = predicate.get("dimension").filter(|d| !d.is_null()) {
+        let Some(level) = place.and_then(|p| p.level.as_ref()) else {
+            return false;
+        };
+        let Some(dimension) = dimension.as_str() else {
+            return false;
+        };
+        if !same_id(dimension, &level.dimension) {
+            return false;
+        }
+    }
+    if let Some(biomes) = predicate.get("biomes").filter(|b| !b.is_null()) {
+        // `LocationPredicate.biomes` reads `Level.getBiome` at the checked
+        // position; the roll captured the biome at the origin only, so a
+        // nonzero offset has no biome to compare and fails instead of
+        // reusing the origin's.
+        if offset != [0, 0, 0] {
+            return false;
+        }
+        let Some(biome) = biome else {
+            return false;
+        };
+        // `LocationPredicate.biomes`: a HolderSet, so a `#tag` (the loot
+        // data's biome tags, packs included), an id or a list of ids.
+        if !holder_set("worldgen/biome", biomes)
+            .iter()
+            .any(|b| b == biome)
+        {
+            return false;
+        }
+    }
+    // Every remaining field is a fact of the block at the origin; the
+    // place carries no world to read at an offset from it.
+    let origin_only = place.filter(|_| offset == [0, 0, 0]);
+    if let Some(block) = predicate.get("block").filter(|b| !b.is_null()) {
+        let Some(place) = origin_only else {
+            return false;
+        };
+        if !block_predicate_matches(block, place, holder_set) {
+            return false;
+        }
+    }
+    if let Some(light) = predicate.get("light").filter(|l| !l.is_null()) {
+        let Some(place) = origin_only else {
+            return false;
+        };
+        let Some(light_at) = place.light else {
+            return false;
+        };
+        if !int_bounds(&light["light"], light_at) {
+            return false;
+        }
+    }
+    if let Some(fluid) = predicate.get("fluid").filter(|f| !f.is_null()) {
+        let Some(place) = origin_only else {
+            return false;
+        };
+        // A FluidState's properties are not captured, so a `state`
+        // matcher cannot be answered.
+        if !fluid["state"].is_null() {
+            return false;
+        }
+        let have = place.fluid.as_deref().unwrap_or("minecraft:empty");
+        let fluids = &fluid["fluids"];
+        if !fluids.is_null() && !holder_set("fluid", fluids).iter().any(|f| f == have) {
+            return false;
+        }
+    }
+    if let Some(want) = predicate.get("can_see_sky").filter(|s| !s.is_null()) {
+        let Some(place) = origin_only else {
+            return false;
+        };
+        let Some(want) = want.as_bool() else {
+            return false;
+        };
+        if place.can_see_sky != Some(want) {
+            return false;
+        }
+    }
+    // `CampfireBlock.isSmokeyPos` needs the block's collision shape and
+    // a campfire tag read from the level; the place captures neither.
+    if predicate.get("smokey").is_some_and(|s| !s.is_null()) {
+        return false;
+    }
+    if let Some(structures) = predicate.get("structures").filter(|s| !s.is_null()) {
+        // `LocationPredicate.structures`: `getStructureWithPieceAt` finds
+        // a start of a named structure with a piece at the position.
+        let Some(place) = origin_only else {
+            return false;
+        };
+        let Some(here) = place.structures.as_ref() else {
+            return false;
+        };
+        let wanted = holder_set("worldgen/structure", structures);
+        if !here
+            .iter()
+            .any(|s| s.piece && wanted.iter().any(|w| same_id(w, &s.name)))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// `BlockPredicate.matchesState` and `matchesBlockEntity` for the block
+/// [`LootPlace::block`] captured. `holder_set` resolves the `blocks`
+/// HolderSet.
+pub fn block_predicate_matches(
+    predicate: &Value,
+    place: &LootPlace,
+    holder_set: &dyn Fn(&str, &Value) -> Vec<String>,
+) -> bool {
+    let Some(state) = place.block.as_ref() else {
+        return false;
+    };
+    let blocks = &predicate["blocks"];
+    if !blocks.is_null() && !holder_set("block", blocks).iter().any(|b| b == &state.name) {
+        return false;
+    }
+    for key in ["state", "properties"] {
+        let Some(properties) = predicate.get(key).and_then(Value::as_object) else {
+            continue;
+        };
+        for (name, want) in properties {
+            let Some(have) = state.properties.get(name) else {
+                return false;
+            };
+            let holds = match want {
+                Value::String(value) => have == value,
+                Value::Bool(value) => have == &value.to_string(),
+                Value::Number(value) => have == &value.to_string(),
+                Value::Object(bounds) => property_bounds(bounds, have),
+                _ => false,
+            };
+            if !holds {
+                return false;
+            }
+        }
+    }
+    if let Some(nbt) = predicate.get("nbt").and_then(Value::as_str) {
+        let Ok((pattern, _)) = horizon_core::nbt::parse_snbt(nbt) else {
+            return false;
+        };
+        if !horizon_core::nbt::compare_nbt(&pattern, place.block_entity.as_ref()) {
+            return false;
+        }
+    }
+    // `DataComponentMatchers.components`: each listed component must
+    // equal the block entity's collected value exactly, as the item
+    // side compares it. A place captured without one fails.
+    if let Some(matchers) = predicate
+        .get("components")
+        .and_then(Value::as_object)
+        .filter(|m| !m.is_empty())
+    {
+        let Some(have) = place.block_entity_components.as_ref() else {
+            return false;
+        };
+        for (id, want) in matchers {
+            let want = match want {
+                // `CustomData.CODEC` reads a compound; a data pack may
+                // write it as JSON or as SNBT, as `NbtPredicate` does.
+                Value::String(_) if id == "minecraft:custom_data" => nbt_predicate_tag(want),
+                _ => json_tag(want),
+            };
+            // A conversion that fails matches nothing, not an absent component.
+            let Some(want) = want else {
+                return false;
+            };
+            let Some(have) = have.get(id.as_str()) else {
+                return false;
+            };
+            if have != &want {
+                return false;
+            }
+        }
+    }
+    // A custom predicate needs the predicate registry, which the place
+    // does not carry; only an empty map holds.
+    !predicate
+        .get("predicates")
+        .and_then(Value::as_object)
+        .is_some_and(|p| !p.is_empty())
+}
+
 impl<R: RandomSource> Context<'_, R> {
     /// A `LootContext.EntityTarget` parameter.
     fn target(&self, name: &str) -> Option<&LootEntity> {
@@ -1439,219 +1672,9 @@ impl<R: RandomSource> Context<'_, R> {
     /// it is never taken as unconstrained.
     fn location_matches(&self, c: &Value) -> bool {
         let place = current_native_loot_place();
-        let origin = place.as_ref().and_then(|p| p.origin);
-        // `LocationCheck.test`: no ORIGIN, no match. The main engine's
-        // fishing roll names its biome without a place, so a biome-only
-        // predicate keeps matching there.
-        if origin.is_none() && self.biome.is_none() {
-            return false;
-        }
-        let predicate = &c["predicate"];
-        if predicate.is_null() {
-            return true;
-        }
-        let Some(predicate) = predicate.as_object() else {
-            return false;
-        };
-        let offset = [
-            c["offsetX"].as_i64().unwrap_or(0),
-            c["offsetY"].as_i64().unwrap_or(0),
-            c["offsetZ"].as_i64().unwrap_or(0),
-        ];
-        let at = origin.map(|p| {
-            [
-                p[0] + offset[0] as f64,
-                p[1] + offset[1] as f64,
-                p[2] + offset[2] as f64,
-            ]
-        });
-        if let Some(position) = predicate.get("position").filter(|p| !p.is_null()) {
-            let Some(at) = at else { return false };
-            // `LocationPredicate.PositionPredicate.matches`.
-            if !bounds_f(&position["x"], at[0])
-                || !bounds_f(&position["y"], at[1])
-                || !bounds_f(&position["z"], at[2])
-            {
-                return false;
-            }
-        }
-        if let Some(dimension) = predicate.get("dimension").filter(|d| !d.is_null()) {
-            let Some(level) = place.as_ref().and_then(|p| p.level.as_ref()) else {
-                return false;
-            };
-            let Some(dimension) = dimension.as_str() else {
-                return false;
-            };
-            if !same_id(dimension, &level.dimension) {
-                return false;
-            }
-        }
-        if let Some(biomes) = predicate.get("biomes").filter(|b| !b.is_null()) {
-            let Some(biome) = self.biome else {
-                return false;
-            };
-            // `LocationPredicate.biomes`: a HolderSet, so a `#tag` (the loot
-            // data's biome tags, packs included), an id or a list of ids.
-            if !self
-                .data
-                .holder_set("worldgen/biome", biomes)
-                .iter()
-                .any(|b| b == biome)
-            {
-                return false;
-            }
-        }
-        // Every remaining field is a fact of the block at the origin; the
-        // place carries no world to read at an offset from it.
-        let origin_only = place.as_ref().filter(|_| offset == [0, 0, 0]);
-        if let Some(block) = predicate.get("block").filter(|b| !b.is_null()) {
-            let Some(place) = origin_only else {
-                return false;
-            };
-            if !self.block_matches(block, place) {
-                return false;
-            }
-        }
-        if let Some(light) = predicate.get("light").filter(|l| !l.is_null()) {
-            let Some(place) = origin_only else {
-                return false;
-            };
-            let Some(light_at) = place.light else {
-                return false;
-            };
-            if !int_bounds(&light["light"], light_at) {
-                return false;
-            }
-        }
-        if let Some(fluid) = predicate.get("fluid").filter(|f| !f.is_null()) {
-            let Some(place) = origin_only else {
-                return false;
-            };
-            // A FluidState's properties are not captured, so a `state`
-            // matcher cannot be answered.
-            if !fluid["state"].is_null() {
-                return false;
-            }
-            let have = place.fluid.as_deref().unwrap_or("minecraft:empty");
-            let fluids = &fluid["fluids"];
-            if !fluids.is_null()
-                && !self
-                    .data
-                    .holder_set("fluid", fluids)
-                    .iter()
-                    .any(|f| f == have)
-            {
-                return false;
-            }
-        }
-        if let Some(want) = predicate.get("can_see_sky").filter(|s| !s.is_null()) {
-            let Some(place) = origin_only else {
-                return false;
-            };
-            let Some(want) = want.as_bool() else {
-                return false;
-            };
-            if place.can_see_sky != Some(want) {
-                return false;
-            }
-        }
-        // `CampfireBlock.isSmokeyPos` needs the block's collision shape and
-        // a campfire tag read from the level; the place captures neither.
-        if predicate.get("smokey").is_some_and(|s| !s.is_null()) {
-            return false;
-        }
-        if let Some(structures) = predicate.get("structures").filter(|s| !s.is_null()) {
-            // `LocationPredicate.structures`: `getStructureWithPieceAt` finds
-            // a start of a named structure with a piece at the position.
-            let Some(place) = origin_only else {
-                return false;
-            };
-            let Some(here) = place.structures.as_ref() else {
-                return false;
-            };
-            let wanted = self.data.holder_set("worldgen/structure", structures);
-            if !here
-                .iter()
-                .any(|s| s.piece && wanted.iter().any(|w| same_id(w, &s.name)))
-            {
-                return false;
-            }
-        }
-        true
-    }
-    /// `BlockPredicate.matchesState` and `matchesBlockEntity` for the block
-    /// [`LootPlace::block`] captured.
-    fn block_matches(&self, predicate: &Value, place: &LootPlace) -> bool {
-        let Some(state) = place.block.as_ref() else {
-            return false;
-        };
-        let blocks = &predicate["blocks"];
-        if !blocks.is_null()
-            && !self
-                .data
-                .holder_set("block", blocks)
-                .iter()
-                .any(|b| b == &state.name)
-        {
-            return false;
-        }
-        for key in ["state", "properties"] {
-            let Some(properties) = predicate.get(key).and_then(Value::as_object) else {
-                continue;
-            };
-            for (name, want) in properties {
-                let Some(have) = state.properties.get(name) else {
-                    return false;
-                };
-                let holds = match want {
-                    Value::String(value) => have == value,
-                    Value::Bool(value) => have == &value.to_string(),
-                    Value::Number(value) => have == &value.to_string(),
-                    Value::Object(bounds) => property_bounds(bounds, have),
-                    _ => false,
-                };
-                if !holds {
-                    return false;
-                }
-            }
-        }
-        if let Some(nbt) = predicate.get("nbt").and_then(Value::as_str) {
-            let Ok((pattern, _)) = horizon_core::nbt::parse_snbt(nbt) else {
-                return false;
-            };
-            if !horizon_core::nbt::compare_nbt(&pattern, place.block_entity.as_ref()) {
-                return false;
-            }
-        }
-        // `DataComponentMatchers.components`: each listed component must
-        // equal the block entity's collected value exactly, as the item
-        // side compares it. A place captured without one fails.
-        if let Some(matchers) = predicate
-            .get("components")
-            .and_then(Value::as_object)
-            .filter(|m| !m.is_empty())
-        {
-            let Some(have) = place.block_entity_components.as_ref() else {
-                return false;
-            };
-            for (id, want) in matchers {
-                let want = match want {
-                    // `CustomData.CODEC` reads a compound; a data pack may
-                    // write it as JSON or as SNBT, as `NbtPredicate` does.
-                    Value::String(_) if id == "minecraft:custom_data" => nbt_predicate_tag(want),
-                    _ => json_tag(want),
-                };
-                if have.get(id.as_str()) != want.as_ref() {
-                    return false;
-                }
-            }
-        }
-        // A custom predicate needs the predicate registry, which the place
-        // does not carry; only an empty map holds.
-        !predicate
-            .get("predicates")
-            .and_then(Value::as_object)
-            .is_some_and(|p| !p.is_empty())
+        evaluate_location_check(c, place.as_deref(), self.biome, &|registry, value| {
+            self.data.holder_set(registry, value)
+        })
     }
     /// A number provider. An unknown type gives 0, as in items.rs `number`
     /// (a data pack's typo yields nothing rather than a full roll).
@@ -3715,17 +3738,20 @@ mod recipe_result_tests;
 mod location_check_biome_tests {
     use super::*;
 
-    /// A table that drops one stone where `biomes` matches, read with a
-    /// jungle biome tag of the game's own and `packs` over it.
-    fn table(name: &str, biomes: &str, packs: &[(String, Vec<Vec<u8>>)]) -> LootData {
+    /// A table that drops one stone where the `location_check` `condition`
+    /// (the fields after the type) holds, read with a jungle biome tag of the
+    /// game's own and `packs` over it.
+    fn table_with(name: &str, condition: &str, packs: &[(String, Vec<Vec<u8>>)]) -> LootData {
         let root = std::env::temp_dir().join(format!("loot-biomes-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let dir = root.join("data/minecraft/loot_table");
         fs::create_dir_all(&dir).unwrap();
-        let json = format!(
-            r#"{{"pools":[{{"rolls":1,"entries":[{{"type":"minecraft:item","name":"minecraft:stone",
-                "condition":{{"type":"minecraft:location_check","predicate":{{"biomes":{biomes}}}}}}}]}}]}}"#
-        );
+        let json = [
+            r#"{"pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:stone","condition":"#,
+            condition,
+            "}]}]}",
+        ]
+        .concat();
         fs::write(dir.join("test.json"), json).unwrap();
         let tags = root.join("data/minecraft/tags/worldgen/biome");
         fs::create_dir_all(&tags).unwrap();
@@ -3739,6 +3765,16 @@ mod location_check_biome_tests {
         let data = LootData::load(&root, &PackOverlay::new(packs), &defaults).unwrap();
         let _ = fs::remove_dir_all(&root);
         data
+    }
+
+    fn table(name: &str, biomes: &str, packs: &[(String, Vec<Vec<u8>>)]) -> LootData {
+        let condition = [
+            r#"{"type":"minecraft:location_check","predicate":{"biomes":"#,
+            biomes,
+            "}}",
+        ]
+        .concat();
+        table_with(name, &condition, packs)
     }
 
     fn drops(data: &LootData, biome: Option<&str>) -> bool {
@@ -3804,6 +3840,25 @@ mod location_check_biome_tests {
         assert!(drops(&data, Some("minecraft:bamboo_jungle")));
         assert!(drops(&data, Some("minecraft:desert")));
         assert!(!drops(&data, Some("minecraft:savanna")));
+    }
+
+    /// `LocationCheck.test` with an offset reads the biome at the checked
+    /// position, not the origin's. The roll captured the origin biome only,
+    /// so a nonzero offset fails instead of reusing it; zero still matches.
+    #[test]
+    fn a_nonzero_offset_biome_check_fails() {
+        let offset = table_with(
+            "offset",
+            r#"{"type":"minecraft:location_check","offsetX":100,"predicate":{"biomes":"minecraft:jungle"}}"#,
+            &[],
+        );
+        assert!(!drops(&offset, Some("minecraft:jungle")));
+        let at_origin = table_with(
+            "offset_zero",
+            r#"{"type":"minecraft:location_check","offsetX":0,"predicate":{"biomes":"minecraft:jungle"}}"#,
+            &[],
+        );
+        assert!(drops(&at_origin, Some("minecraft:jungle")));
     }
 }
 
