@@ -9,9 +9,10 @@ pub struct ResourcePackOffer {
     /// The pack's identity on the client: pushing the same id again replaces it, and
     /// `pop_resource_pack` and `resource_pack_status` name it.
     pub id: u128,
-    /// Where the client downloads the zip from; at most 32767 characters.
+    /// Where the client downloads the zip from; at most 32767 UTF-16 code units.
     pub url: String,
     /// The zip's SHA-1 as 40 hexadecimal characters, for the client to check; empty for no check.
+    /// The protocol caps this string at 40 UTF-16 code units.
     pub sha1: String,
     /// The client's screen offers no way to keep playing without it.
     pub required: bool,
@@ -43,9 +44,9 @@ pub enum PlayerPackRefusal {
     Stale,
     /// The player has no connection to send to (a fake player).
     NoConnection,
-    /// The URL is over 32767 characters, the most a string of the protocol holds.
+    /// The URL is over 32767 UTF-16 code units, the most a protocol string holds.
     UrlTooLong,
-    /// The SHA-1 is over 40 characters (`ClientboundResourcePackPushPacket` refuses it).
+    /// The SHA-1 is over 40 UTF-16 code units (`ClientboundResourcePackPushPacket` refuses it).
     HashTooLong,
     /// The prompt is text the boundary refuses (too large or too deeply nested).
     BadPrompt(crate::TextFormError),

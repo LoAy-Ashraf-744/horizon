@@ -90,18 +90,34 @@ fn each_pack_refusal_has_its_own_name() {
     with_guests(|game| {
         let b = game.player(13).unwrap();
         let rx = listen(game, 13);
-        let mut long_url = offer();
-        long_url.url = "u".repeat(32768);
-        assert_eq!(
-            b.push_resource_pack(game, long_url),
-            Err(Refusal::UrlTooLong)
-        );
-        let mut long_hash = offer();
-        long_hash.sha1 = "a".repeat(41);
-        assert_eq!(
-            b.push_resource_pack(game, long_hash),
-            Err(Refusal::HashTooLong)
-        );
+        for url in ["u".repeat(32768), "🙂".repeat(16384)] {
+            let mut long_url = offer();
+            long_url.url = url;
+            assert_eq!(
+                b.push_resource_pack(game, long_url),
+                Err(Refusal::UrlTooLong)
+            );
+            assert!(matches!(
+                rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+        }
+        for sha1 in [
+            "a".repeat(41),
+            "🙂".repeat(21),
+            format!("{}a", "🙂".repeat(20)),
+        ] {
+            let mut long_hash = offer();
+            long_hash.sha1 = sha1;
+            assert_eq!(
+                b.push_resource_pack(game, long_hash),
+                Err(Refusal::HashTooLong)
+            );
+            assert!(matches!(
+                rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+        }
         let entity = b.entity();
         let stale = mod_api::__private::game::player_ref(
             EntityRef::new(WorldEpoch::new(entity.epoch().get() + 1), entity.id()),
@@ -117,11 +133,20 @@ fn each_pack_refusal_has_its_own_name() {
             Err(Refusal::NoConnection)
         );
         assert!(packets(&rx).is_empty());
-        let mut edge = offer();
-        edge.url = "u".repeat(32767);
-        edge.sha1 = "a".repeat(40);
-        assert_eq!(b.push_resource_pack(game, edge), Ok(()));
-        assert_eq!(packets(&rx).len(), 1);
+        for (url, sha1) in [
+            ("u".repeat(32767), "a".repeat(40)),
+            (format!("{}u", "🙂".repeat(16383)), "🙂".repeat(20)),
+        ] {
+            let mut edge = offer();
+            edge.url = url.clone();
+            edge.sha1 = sha1.clone();
+            assert_eq!(b.push_resource_pack(game, edge), Ok(()));
+            let sent = packets(&rx);
+            let [C::ResourcePackPush(push)] = &sent[..] else {
+                panic!("{sent:?}");
+            };
+            assert_eq!((&push.url, &push.hash), (&url, &sha1));
+        }
     });
 }
 

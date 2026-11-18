@@ -1057,7 +1057,8 @@ pub trait PlayersBackendMut {
     /// what the client's screen offers: the server does not disconnect a player who declines
     /// (only the `server.properties` pack does), so a mod acts on a status 1 itself. Refuses,
     /// sending nothing, with `PlayerPackRefusal`: `Client`, `Stale`, `NoConnection`, `UrlTooLong`
-    /// (over 32767 characters), `HashTooLong` (over 40) and `BadPrompt` (text the boundary refuses).
+    /// (over 32767 UTF-16 code units), `HashTooLong` (over 40 UTF-16 code units) and `BadPrompt`
+    /// (text the boundary refuses).
     #[access(WorldOnly)]
     fn player_push_resource_pack(
         &mut self,

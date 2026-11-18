@@ -83,7 +83,8 @@ what the client's screen offers: the server does not disconnect a player who dec
 so only for the `server.properties` pack), so a mod that needs the pack kicks on status 1 or 2 itself. Answers to the
 `server.properties` pack are given before the player has joined and are not heard. Both calls return
 `Result<(), PlayerPackRefusal>`: `Client`, `Stale`, `NoConnection`, and for a push `UrlTooLong` (over 32767
-characters), `HashTooLong` (over 40) and `BadPrompt` (text the boundary refuses); a refused call sends nothing.
+UTF-16 code units), `HashTooLong` (over 40 UTF-16 code units) and `BadPrompt` (text the boundary refuses); a refused
+call sends nothing. Characters outside the BMP count as two code units.
 
 ## Chat lines and respawn
 

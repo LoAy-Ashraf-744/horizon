@@ -6,7 +6,7 @@ use horizon_protocol::packets::{
 };
 use mod_api::{PlayerPackRefusal as Refusal, PlayerRef, ResourcePackOffer};
 
-/// The most characters of a string of the protocol (`FriendlyByteBuf.writeUtf` without a limit).
+/// The most UTF-16 code units of a protocol string (`FriendlyByteBuf.writeUtf` without a limit).
 const URL_LIMIT: usize = 32767;
 /// `ClientboundResourcePackPushPacket` refuses a longer hash.
 const HASH_LIMIT: usize = 40;
@@ -29,10 +29,10 @@ impl Game<'_> {
         pack: ResourcePackOffer,
     ) -> Result<(), Refusal> {
         let uuid = self.pack_target(player)?;
-        if pack.url.chars().count() > URL_LIMIT {
+        if pack.url.encode_utf16().count() > URL_LIMIT {
             return Err(Refusal::UrlTooLong);
         }
-        if pack.sha1.chars().count() > HASH_LIMIT {
+        if pack.sha1.encode_utf16().count() > HASH_LIMIT {
             return Err(Refusal::HashTooLong);
         }
         let prompt = pack
