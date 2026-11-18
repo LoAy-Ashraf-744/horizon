@@ -29,7 +29,7 @@ impl Game<'_> {
         v: [f64; 3],
         thrower: Option<[i32; 4]>,
     ) -> Option<u32> {
-        self.push_item_entity(thrown, at, Some(v), 40, None);
+        self.try_push_item_entity(thrown, at, Some(v), 40, None)?;
         let id = self.next_entity;
         if let Some(item) = self.dropped.last_mut() {
             item.thrower = thrower;

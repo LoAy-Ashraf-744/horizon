@@ -5,8 +5,30 @@ use horizon_client::{entities::ItemEntity, items::ItemStack};
 use horizon_core::geometry::Vec3;
 
 impl Game<'_> {
+    /// Pushes an `ItemEntity` into `dropped` unless `stack` is empty or air.
+    pub(in crate::game) fn try_push_item_entity(
+        &mut self,
+        stack: ItemStack,
+        position: [f64; 3],
+        velocity: Option<[f64; 3]>,
+        pickup_delay: u32,
+        random: Option<spill::ItemRandom>,
+    ) -> Option<[f64; 3]> {
+        push_item_entity_into(
+            &mut self.dropped,
+            &mut self.persist.uuids,
+            &mut self.next_entity,
+            stack,
+            position,
+            velocity,
+            pickup_delay,
+            random,
+        )
+    }
+
     /// `new ItemEntity(..)`: the item at the end of `dropped`, not yet joined
     /// (`join_item_entity`). Returns its motion.
+    #[cfg(test)]
     pub(in crate::game) fn push_item_entity(
         &mut self,
         stack: ItemStack,
@@ -15,27 +37,8 @@ impl Game<'_> {
         pickup_delay: u32,
         random: Option<spill::ItemRandom>,
     ) -> [f64; 3] {
-        let random = random.unwrap_or_else(|| spill::prepare_item_random(velocity));
-        self.next_entity += 1;
-        let p = Vec3::new(position[0], position[1], position[2]);
-        self.persist.uuids.insert(self.next_entity, random.uuid);
-        let (bob, yaw) = (random.bob, random.yaw);
-        let velocity = velocity.unwrap_or(random.velocity);
-        self.dropped.push(random.state.apply(ItemEntity {
-            attachment_lifetime: Default::default(),
-            fall_distance: 0.0,
-            rotation: [yaw, 0.0],
-            pickup_delay: i64::from(pickup_delay),
-            random: horizon_core::random::EntityRandom::own(random.own.into()),
-            ..ItemEntity::new(
-                self.next_entity,
-                stack,
-                p,
-                Vec3::new(velocity[0], velocity[1], velocity[2]),
-                bob,
-            )
-        }));
-        velocity
+        self.try_push_item_entity(stack, position, velocity, pickup_delay, random)
+            .unwrap_or_else(|| velocity.unwrap_or_default())
     }
 
     /// `ServerLevel.addFreshEntity` of the item `id` that `push_item_entity`
@@ -57,6 +60,74 @@ impl Game<'_> {
             self.native_joins_flush(false, id);
         } else if self.native_joins_flush(false, id) {
             self.native_item_spawn(id, &item, count, position);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_item_entity_into(
+    dropped: &mut horizon_client::join_seq::JoinList<ItemEntity>,
+    uuids: &mut super::persist::EntityUuids,
+    next_entity: &mut u32,
+    stack: ItemStack,
+    position: [f64; 3],
+    velocity: Option<[f64; 3]>,
+    pickup_delay: u32,
+    random: Option<spill::ItemRandom>,
+) -> Option<[f64; 3]> {
+    if stack.count == 0 || &*stack.item == "minecraft:air" {
+        return None;
+    }
+    let random = random.unwrap_or_else(|| spill::prepare_item_random(velocity));
+    *next_entity += 1;
+    let p = Vec3::new(position[0], position[1], position[2]);
+    uuids.insert(*next_entity, random.uuid);
+    let (bob, yaw) = (random.bob, random.yaw);
+    let velocity = velocity.unwrap_or(random.velocity);
+    dropped.push(random.state.apply(ItemEntity {
+        attachment_lifetime: Default::default(),
+        fall_distance: 0.0,
+        rotation: [yaw, 0.0],
+        pickup_delay: i64::from(pickup_delay),
+        random: horizon_core::random::EntityRandom::own(random.own.into()),
+        ..ItemEntity::new(
+            *next_entity,
+            stack,
+            p,
+            Vec3::new(velocity[0], velocity[1], velocity[2]),
+            bob,
+        )
+    }));
+    Some(velocity)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_item_entity_rejects_empty_and_air_stacks() {
+        for stack in [
+            ItemStack::new("minecraft:air", 1),
+            ItemStack::new("minecraft:stone", 0),
+        ] {
+            let mut dropped = horizon_client::join_seq::JoinList::default();
+            let mut uuids = super::super::persist::EntityUuids::default();
+            let mut next_entity = 10;
+            let result = push_item_entity_into(
+                &mut dropped,
+                &mut uuids,
+                &mut next_entity,
+                stack,
+                [0.5, 64.0, 0.5],
+                Some([0.1, 0.2, 0.3]),
+                10,
+                None,
+            );
+            assert_eq!(result, None);
+            assert!(dropped.is_empty());
+            assert!(uuids.is_empty());
+            assert_eq!(next_entity, 10);
         }
     }
 }

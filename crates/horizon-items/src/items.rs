@@ -1948,7 +1948,9 @@ impl<R: RandomSource> LootContext<'_, R> {
                 for (mut stack, emitted) in produced {
                     ctx.modifiers(&pool["modifier"], &mut stack, random);
                     ctx.modifiers(&table["modifier"], &mut stack, random);
-                    if stack.count > 0 || (ctx.keep_empty && emitted) {
+                    if (stack.count > 0 && &*stack.item != "minecraft:air")
+                        || (ctx.keep_empty && emitted)
+                    {
                         out.push(stack);
                     }
                 }
@@ -4590,6 +4592,42 @@ mod tests {
         );
         // 46 is vanilla's count for this seed; an extra level draw gives 28.
         assert_eq!(drops[0].count, 46);
+    }
+
+    #[test]
+    fn loot_evaluation_never_emits_air_stacks() {
+        let items = Items::for_tests(HashMap::new());
+        let empty_with_count = json!({
+            "pools": [{
+                "rolls": 1,
+                "entries": [{
+                    "type": "minecraft:empty",
+                    "modifier": {"type": "minecraft:set_count", "count": 1}
+                }]
+            }]
+        });
+        let air_item = json!({
+            "pools": [{
+                "rolls": 1,
+                "entries": [{
+                    "type": "minecraft:item",
+                    "name": "minecraft:air"
+                }]
+            }]
+        });
+        let missing_name = json!({
+            "pools": [{
+                "rolls": 1,
+                "entries": [{
+                    "type": "minecraft:item"
+                }]
+            }]
+        });
+        for table in [&empty_with_count, &air_item, &missing_name] {
+            let drops =
+                items.inline_loot_table_for_command(table, None, &mut LegacyRandom::new(1), false);
+            assert!(drops.is_empty(), "expected no air drops, got {drops:?}");
+        }
     }
 
     /// A content root's remainders reach the mods' items; vanilla's stay its own.
