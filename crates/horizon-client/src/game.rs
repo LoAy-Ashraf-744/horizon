@@ -2612,14 +2612,11 @@ impl Game<'_> {
         velocity: Option<[f64; 3]>,
         pickup_delay: u32,
         random: Option<spill::ItemRandom>,
-    ) -> [f64; 3] {
-        let Some(velocity) =
-            self.try_push_item_entity(stack, position, velocity, pickup_delay, random)
-        else {
-            return velocity.unwrap_or_default();
-        };
-        self.join_item_entity(self.next_entity, position);
-        velocity
+    ) -> Option<(u32, [f64; 3])> {
+        let (id, velocity) =
+            self.try_push_item_entity(stack, position, velocity, pickup_delay, random)?;
+        self.join_item_entity(id, position);
+        Some((id, velocity))
     }
     /// The block entity at `pos` saved with its id and position
     /// (`saveWithFullMetadata`), or the saved one Horizon keeps as loaded:
@@ -2688,6 +2685,9 @@ impl Game<'_> {
     }
     /// `Player.drop`: the statistics and a thrown item entity in front of the player.
     pub(super) fn player_drop(&mut self, thrown: ItemStack) -> Option<u32> {
+        if thrown.count == 0 || &*thrown.item == "minecraft:air" {
+            return None;
+        }
         let eye = self.eye_position()?;
         // LivingEntity.drop: every drop swings the main hand, a menu's
         // THROW and a creative tab's drop included.
@@ -2709,7 +2709,7 @@ impl Game<'_> {
         stack: ItemStack,
         thrown_from_hand: bool,
     ) -> Option<u32> {
-        if stack.count == 0 {
+        if stack.count == 0 || &*stack.item == "minecraft:air" {
             return None;
         }
         self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);

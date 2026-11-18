@@ -3192,7 +3192,7 @@ pub(crate) mod tests {
             ItemStack::new("minecraft:air", 1),
             ItemStack::new("minecraft:stone", 0),
         ] {
-            let mut inventory = [const { None }; 36];
+            let mut inventory = [const { None }; 41];
             let count = stack.count;
             assert!(!super::inventory_add(
                 &mut inventory,
