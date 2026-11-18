@@ -2656,6 +2656,17 @@ impl Game<'_> {
                 raining: weather && rain > 0.2,
                 thundering: weather && thunder > 0.9,
             }),
+            // `Level.getBiome` at ORIGIN: the chunk holds the biome even
+            // outside the build height, so only a missing chunk has none.
+            biome: self
+                .world
+                .chunks
+                .get(&(pos[0] >> 4, pos[2] >> 4))
+                .map(|chunk| {
+                    world_biomes!(self)
+                        .name(chunk.biome(pos[0], pos[1], pos[2]))
+                        .to_owned()
+                }),
             block: state.map(|state| horizon_world::loot::LootBlockState {
                 name: self.res.facts().get(state).name.to_string(),
                 properties: self

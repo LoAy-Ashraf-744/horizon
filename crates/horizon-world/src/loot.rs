@@ -185,6 +185,10 @@ pub struct LootPlace {
     pub block_entity_components: Option<Tag>,
     /// The level the roll is in.
     pub level: Option<LootLevel>,
+    /// `Level.getBiome` at [`Self::origin`]: the biome id
+    /// (`minecraft:jungle`). None when the place had no loaded level to ask,
+    /// so a `biomes` predicate fails there.
+    pub biome: Option<String>,
     /// The block at [`Self::origin`] when the game had a level to read it
     /// from: what `LocationPredicate.block` compares. It is the block the
     /// roll started on (the broken block for a block's own drops), not the
@@ -1371,6 +1375,9 @@ pub fn evaluate_location_check(
     holder_set: &dyn Fn(&str, &Value) -> Vec<String>,
 ) -> bool {
     let origin = place.and_then(|p| p.origin);
+    // An explicit biome (the fishing roll names one without a place) wins
+    // over the place's, which is captured at the origin.
+    let biome = biome.or_else(|| place.and_then(|p| p.biome.as_deref()));
     // `LocationCheck.test`: no ORIGIN, no match. The main engine's
     // fishing roll names its biome without a place, so a biome-only
     // predicate keeps matching there.
@@ -3859,6 +3866,66 @@ mod location_check_biome_tests {
             &[],
         );
         assert!(drops(&at_origin, Some("minecraft:jungle")));
+    }
+
+    /// An entity roll has no explicit biome (`roll_entity_with` leaves it
+    /// None), so a biome-only predicate reads the roll site's: it matches at
+    /// a known biome and fails when the place captured none, never matching
+    /// unconstrained.
+    #[test]
+    fn entity_loot_reads_the_places_biome() {
+        let data = table("entity", r#""minecraft:jungle""#, &[]);
+        let place = |biome: Option<&str>| LootPlace {
+            origin: Some([0.5, 64.0, 0.5]),
+            level: Some(LootLevel {
+                dimension: "minecraft:overworld".to_owned(),
+                ..LootLevel::default()
+            }),
+            biome: biome.map(str::to_owned),
+            ..LootPlace::default()
+        };
+        let drops = |place: Option<LootPlace>| {
+            let roll = || {
+                !data
+                    .roll_entity(
+                        "minecraft:test",
+                        &mut LegacyRandom::new(1),
+                        &EntityLootParams::default(),
+                    )
+                    .is_empty()
+            };
+            match place {
+                Some(place) => with_native_loot_place(place, roll),
+                None => roll(),
+            }
+        };
+        assert!(drops(Some(place(Some("minecraft:jungle")))));
+        assert!(!drops(Some(place(Some("minecraft:desert")))));
+        assert!(!drops(Some(place(None))), "no captured biome fails");
+        assert!(!drops(None), "no place fails");
+    }
+
+    /// A biome the roll names itself (the fishing roll) wins over the
+    /// place's, which is captured at the origin only.
+    #[test]
+    fn an_explicit_biome_wins_over_the_places() {
+        let data = table("explicit", r#""minecraft:jungle""#, &[]);
+        let place = |biome: &str| LootPlace {
+            origin: Some([0.5, 64.0, 0.5]),
+            biome: Some(biome.to_owned()),
+            ..LootPlace::default()
+        };
+        let with_place = |place: LootPlace, biome: Option<&str>| {
+            with_native_loot_place(place, || drops(&data, biome))
+        };
+        assert!(with_place(
+            place("minecraft:desert"),
+            Some("minecraft:jungle")
+        ));
+        assert!(!with_place(
+            place("minecraft:jungle"),
+            Some("minecraft:desert")
+        ));
     }
 }
 
