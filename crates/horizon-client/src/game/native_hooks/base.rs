@@ -1818,7 +1818,8 @@ impl Game<'_> {
     /// work. The pack a dedicated server offers in the configuration
     /// (`resource-pack` in `server.properties`) is answered before the
     /// player has joined, and those answers are not heard. Once for each
-    /// answer, on a server.
+    /// answer, on a server, including while the player is dead. Version 2 adds
+    /// `pack` after `status`; version 1 had no pack id.
     pub(in crate::game) fn native_resource_pack_status(
         &mut self,
         player: u128,

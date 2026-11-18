@@ -1069,8 +1069,9 @@ pub trait PlayersBackendMut {
     /// Takes the resource pack `id` off that player's client
     /// (`ClientboundResourcePackPopPacket`; Paper's `Player.removeResourcePack`), or with None
     /// every pack the server pushed to them, the `server.properties` pack included. An id the
-    /// client does not hold is ignored by the client. Refuses, sending nothing, with
-    /// `PlayerPackRefusal`: `Client`, `Stale` and `NoConnection`.
+    /// client does not hold is ignored by the client. Like vanilla, this does not cancel an
+    /// offer still waiting in a consent prompt: accepting that prompt can load the pack later.
+    /// Refuses, sending nothing, with `PlayerPackRefusal`: `Client`, `Stale` and `NoConnection`.
     #[access(WorldOnly)]
     fn player_pop_resource_pack(
         &mut self,

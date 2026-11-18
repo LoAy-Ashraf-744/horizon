@@ -213,7 +213,8 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   playing (`ServerboundResourcePackPacket`): `status` is `Action`'s number (0 loaded, 1 declined, 2 failed download,
   3 accepted, 4 downloaded, 5 invalid URL, 6 failed reload, 7 discarded). It only hears. The pack a dedicated server
   offers during the configuration is answered before the player has joined and is not heard. The player's state is
-  swapped in, so `PlayerRef::tell` works.
+  swapped in, so `PlayerRef::tell` works. Answers are heard even while the player is dead. Version 2 adds
+  `pack` after `status`; version 1 had no pack id.
 - **`native_projectile_hit(owner, kind, hit_entity, pos, cancel)`**: a projectile a server player launched (arrow,
   snowball, egg, thrown trident, ender pearl, ...) hit an entity (`hit_entity`) or a block at `pos`, heard before any
   of its effects (NeoForge's `ProjectileImpactEvent`). Set `cancel` and it does nothing: it vanishes, a thrown trident
@@ -2394,7 +2395,7 @@ registration path.
 
 - A server player's sprint: `player_sprint(player, name, sprinting)` is heard once each time a player's client starts or stops sprinting (the sprint key, a double tap forward, letting go) and the server's player has taken it, with their state swapped in. It only hears what the client asks: a sprint that ends by itself (knockback, hunger, a wall) is not reported.
 
-- A resource pack answer: `resource_pack_status(player, name, status, pack)` is heard when a server player's client answers a resource pack in play (`status` is `ServerboundResourcePackPacket.Action`'s number: 0 loaded, 1 declined, 2 failed download, 3 accepted, 4 downloaded, 5 invalid URL, 6 failed reload, 7 discarded), with their state swapped in. The pack offered during the configuration is answered before the player has joined and is not heard.
+- A resource pack answer: version 2 of `resource_pack_status(player, name, status, pack)` is heard when a server player's client answers a resource pack in play (`status` is `ServerboundResourcePackPacket.Action`'s number: 0 loaded, 1 declined, 2 failed download, 3 accepted, 4 downloaded, 5 invalid URL, 6 failed reload, 7 discarded), even while the player is dead, with their state swapped in. Version 1 had no `pack` id. The pack offered during the configuration is answered before the player has joined and is not heard.
 
 - A player taking an item from or putting one on an armor stand: `armor_stand_manipulate(player, name, stand_id, slot, cancel)` is heard after the stand's disabled-slot checks and before anything moves, with the stand's entity id and the slot the click reached (`mainhand`, `offhand`, `feet`, `legs`, `chest`, `head`), on a server, with the player's state swapped in. A mod sets `cancel` and neither the stand nor the player's hand changes.
 

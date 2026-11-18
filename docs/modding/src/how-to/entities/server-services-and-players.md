@@ -77,8 +77,13 @@ takes off every pack the server pushed, the `resource-pack` of `server.propertie
 `ResourcePackOffer::new(id, url)` and set `sha1` (40 hex digits, or empty for no check), `required` and `prompt`.
 A pack pushed with the id of one the client holds replaces it; other ids stack. The client downloads the zip itself,
 so the URL must be reachable from that player.
+Like vanilla, popping does not retract an offer still waiting in an unanswered consent prompt;
+accepting that prompt can load the pack later. It is not a pending-offer cancellation API.
 
-`resource_pack_status(player, name, status, pack)` hears the answers, with the pack's id. `required` changes only
+Version 2 of `resource_pack_status(player, name, status, pack)` hears the answers, with the pack's id,
+including while the player is dead. Version 1 had no `pack` argument; rebuild native and wasm listeners
+against the new SDK. The contract version is catalog metadata, not a supported `hook_version` manifest setting.
+`required` changes only
 what the client's screen offers: the server does not disconnect a player who declines a pack a mod pushed (it does
 so only for the `server.properties` pack), so a mod that needs the pack kicks on status 1 or 2 itself. Answers to the
 `server.properties` pack are given before the player has joined and are not heard. Both calls return

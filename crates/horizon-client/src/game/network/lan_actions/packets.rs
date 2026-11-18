@@ -144,7 +144,9 @@ impl Game<'_> {
         };
         // A dead player acts no more, but the death screen still respawns and chats: its
         // commands run as anyone's (ServerGamePacketListenerImpl.handleChatCommand doesn't
-        // look at the player's health).
+        // look at the player's health). Resource-pack answers are connection status, not an
+        // action, and ServerCommonPacketListenerImpl.handleResourcePackResponse accepts them
+        // regardless of health.
         if host.hub.guests[gi].dead
             && !matches!(
                 packet,
@@ -152,6 +154,7 @@ impl Game<'_> {
                     | S::ChatCommand(_)
                     | S::ChatCommandSigned(_)
                     | S::CustomClickAction(_)
+                    | S::ResourcePack(_)
             )
         {
             return;
@@ -661,8 +664,8 @@ impl Game<'_> {
             // STOP_RIDING_JUMP: AbstractHorse and Camel handleStopJump do
             // nothing, and a nautilus' dash is not stopped this way.
             S::PlayerCommand(p) if p.action == 4 => {}
-            // ServerboundResourcePackPacket in play: the server has nothing to
-            // do with it (a declined required pack is handled on the connection).
+            // ServerboundResourcePackPacket in play: mods hear the answer even after death
+            // (a declined server.properties required pack is handled on the connection).
             S::ResourcePack(r) => {
                 let Some(host) = self.lan.as_ref() else {
                     return;

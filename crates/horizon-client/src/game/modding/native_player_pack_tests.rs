@@ -164,3 +164,76 @@ fn a_client_cannot_push_or_pop_a_pack() {
         assert_eq!(ghost.pop_resource_pack(game, None), Err(Refusal::Client));
     });
 }
+
+/// Connection-status answers reach the listener with the reporting player's context after death.
+#[test]
+#[ignore = "daily"]
+fn dead_guests_resource_pack_answers_keep_their_player_and_pack() {
+    use horizon_protocol::packets::{configuration::ResourcePackResponse, play::Serverbound as S};
+    use mod_api::{Hooks, ModEntry, ResourcePackStatusEvent, ServerHost};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Debug, PartialEq)]
+    struct Answer {
+        player: u128,
+        name: String,
+        status: i32,
+        pack: u128,
+        acting_player: Option<u128>,
+    }
+    struct Observer(Arc<Mutex<Vec<Answer>>>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Observer {
+        fn resource_pack_status(
+            &self,
+            host: &mut dyn ServerHost,
+            event: &mut ResourcePackStatusEvent<'_>,
+        ) {
+            self.0.lock().unwrap().push(Answer {
+                player: event.player,
+                name: event.name.to_owned(),
+                status: event.status,
+                pack: event.pack,
+                acting_player: host.players().acting_player().map(|player| player.uuid()),
+            });
+        }
+    }
+    let answers = Arc::new(Mutex::new(Vec::new()));
+    mod_platform::testing::with_mods(
+        vec![ModEntry::new(
+            "observer",
+            Box::new(Observer(answers.clone())),
+        )]
+        .into(),
+        || {
+            with_guests(|game| {
+                game.lan
+                    .as_mut()
+                    .unwrap()
+                    .hub
+                    .update_guest(13, |guest| guest.dead = true)
+                    .unwrap();
+                let outer = game.lan_acting;
+                let cases = [(12, 7, 3), (13, 8, 0), (13, 9, 1), (13, 10, 7)];
+                for (conn, id, action) in cases {
+                    game.lan_guest_packet(
+                        conn,
+                        S::ResourcePack(ResourcePackResponse { id, action }),
+                    );
+                    assert_eq!(game.lan_acting, outer);
+                }
+                let expected: Vec<_> = cases
+                    .into_iter()
+                    .map(|(conn, pack, status)| Answer {
+                        player: u128::from(conn),
+                        name: format!("guest{conn}"),
+                        status,
+                        pack,
+                        acting_player: Some(u128::from(conn)),
+                    })
+                    .collect();
+                assert_eq!(*answers.lock().unwrap(), expected);
+            });
+        },
+    );
+}

@@ -14,10 +14,12 @@ pub trait Hooks {
     /// work. The pack a dedicated server offers in the configuration
     /// (`resource-pack` in `server.properties`) is answered before the
     /// player has joined, and those answers are not heard. Once for each
-    /// answer, on a server.
+    /// answer, on a server, including while the player is dead. Version 2 adds
+    /// `pack` after `status`; version 1 had no pack id.
     #[hook(
         side = "server",
         contract = "listen",
+        version = 2,
         neoforge = "none (NeoForge has no resource-pack status event)"
     )]
     fn resource_pack_status();
