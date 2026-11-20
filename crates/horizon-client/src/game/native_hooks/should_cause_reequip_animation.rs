@@ -16,7 +16,7 @@ impl Game<'_> {
         slot_changed: bool,
         reequip: &mut bool,
     ) {
-        self.reequip_slot_dispatch(stack, old, hand, slot, slot_changed, reequip);
+        self.fire_should_cause_reequip_animation(stack, old, hand, slot, slot_changed, reequip);
     }
 
     /// The named forwarding point of the reequip decision: it passes the
