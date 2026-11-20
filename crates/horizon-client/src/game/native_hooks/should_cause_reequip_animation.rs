@@ -11,9 +11,10 @@ impl Game<'_> {
         stack: &ItemStack,
         old: Option<&ItemStack>,
         hand: Hand,
+        slot: Option<&str>,
         slot_changed: bool,
         reequip: &mut bool,
     ) {
-        self.fire_should_cause_reequip_animation(stack, old, hand, slot_changed, reequip);
+        self.fire_should_cause_reequip_animation(stack, old, hand, slot, slot_changed, reequip);
     }
 }
