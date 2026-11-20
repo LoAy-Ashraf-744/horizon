@@ -6,6 +6,7 @@ impl Game<'_> {
     /// rise again to show `stack` in place of `old`? `reequip` arrives with
     /// vanilla's answer; the parts of `stack`'s item may set it. `slot` names
     /// the equipment slot where the game knows one. Client-side.
+    #[allow(dead_code)]
     #[inline(never)]
     pub(in crate::game) fn native_should_cause_reequip_animation(
         &self,
