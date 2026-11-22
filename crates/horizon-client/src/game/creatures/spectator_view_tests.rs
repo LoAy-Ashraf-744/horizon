@@ -26,7 +26,7 @@ fn game() -> Game<'static> {
         &settings,
         std::time::Instant::now(),
         false,
-        crate::game::execution_role::ExecutionRole::IntegratedServer,
+        crate::game::execution_role::ExecutionRole::Client,
         &Progress::new(),
         &mut |_, _| unreachable!(),
     )
@@ -48,11 +48,6 @@ fn game() -> Game<'static> {
     )
     .unwrap();
     game.build_registries();
-    // The atlas the game bakes at startup: `mob_geometry` finds a body's texture in it.
-    game.gui.atlas = horizon_client::hud::HudAtlas::build(
-        &horizon_assets::resource_source::ResourceSource::directory(root.clone()),
-    )
-    .unwrap();
     game.set_allow_commands(true);
     game.world
         .chunks
@@ -100,5 +95,92 @@ fn a_spectator_sees_the_invisible_body() {
         out.iter()
             .all(|v| v.layer & horizon_client::gfx::OIT_ENTITY != 0),
         "the translucent body blends"
+    );
+}
+
+/// `SulfurCubeInnerLayer.submit` draws a contained block without checking
+/// `state.isInvisible`, while the fallback inner core checks `!state.isInvisible`.
+#[test]
+#[ignore = "daily"]
+fn an_invisible_sulfur_cube_keeps_its_contained_block() {
+    let mut game = game();
+    let types = MobTypes::load(&root()).unwrap();
+    let kind = Arc::new(types.types["minecraft:sulfur_cube"].clone());
+    let mut cube = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+    cube.invisible = true;
+    cube.extra.set_body(Some("minecraft:tnt".into()));
+    game.mobs.push(cube);
+    let camera = glam::DVec3::new(6.5, 65.0, 6.5);
+
+    // 1. Normal viewer + invisible cube with contained block: only the block draws.
+    let mut out = Vec::new();
+    game.mob_geometry(camera, 0.0, &mut out);
+    assert!(
+        !out.is_empty(),
+        "an invisible sulfur cube keeps its contained block visible"
+    );
+    assert!(
+        out.iter()
+            .all(|v| v.layer & horizon_client::gfx::OIT_ENTITY == 0 && v.color >> 24 == 0xFF),
+        "outer shell stays hidden; only opaque contained-block vertices emit"
+    );
+
+    // 2. Normal viewer + empty invisible cube: completely hidden.
+    game.mobs[0].extra.set_body(None);
+    let mut out = Vec::new();
+    game.mob_geometry(camera, 0.0, &mut out);
+    assert!(
+        out.is_empty(),
+        "an invisible empty sulfur cube is hidden from a normal viewer"
+    );
+
+    // 3. Spectator viewer: empty invisible cube shows only translucent outer shell (no inner core),
+    //    while a cube with a contained block shows both the opaque block and translucent shell.
+    game.set_mode(GameMode::Spectator);
+    let mut out = Vec::new();
+    game.mob_geometry(camera, 0.0, &mut out);
+    assert!(
+        !out.is_empty(),
+        "a spectator sees the empty invisible cube's translucent outer shell"
+    );
+    assert!(
+        out.iter()
+            .all(|v| v.layer & horizon_client::gfx::OIT_ENTITY != 0 && v.color >> 24 == 0x26),
+        "empty invisible cube omits the inner core in spectator view"
+    );
+
+    game.mobs[0].extra.set_body(Some("minecraft:tnt".into()));
+    let mut out = Vec::new();
+    game.mob_geometry(camera, 0.0, &mut out);
+    assert!(
+        out.iter()
+            .any(|v| v.layer & horizon_client::gfx::OIT_ENTITY == 0 && v.color >> 24 == 0xFF),
+        "spectator sees the opaque contained block"
+    );
+    assert!(
+        out.iter()
+            .any(|v| v.layer & horizon_client::gfx::OIT_ENTITY != 0 && v.color >> 24 == 0x26),
+        "spectator also sees the translucent outer shell"
+    );
+
+    // 4. Normal viewer + glowing + invisible cube with contained block:
+    //    contained block stays visible and receives the glowing outline.
+    game.set_mode(GameMode::Survival);
+    game.mobs[0].glowing = true;
+    game.glowing_vertices.borrow_mut().clear();
+    let mut out = Vec::new();
+    game.mob_geometry(camera, 0.0, &mut out);
+    assert!(
+        !out.is_empty(),
+        "a glowing invisible sulfur cube keeps its contained block visible"
+    );
+    assert!(
+        out.iter()
+            .all(|v| v.layer & horizon_client::gfx::OIT_ENTITY == 0 && v.color >> 24 == 0xFF),
+        "only the contained block remains visible for a glowing invisible cube"
+    );
+    assert!(
+        !game.glowing_vertices.borrow().is_empty(),
+        "the contained block receives the glowing outline"
     );
 }
