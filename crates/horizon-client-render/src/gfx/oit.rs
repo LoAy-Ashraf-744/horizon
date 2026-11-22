@@ -29,14 +29,58 @@ pub enum Stage {
 }
 
 /// What the device must support: max blending on 32-bit float targets.
+///
+/// `FLOAT32_BLENDABLE` is a Vulkan/WebGPU feature. wgpu's Metal adapter reports
+/// it, but Metal's physical format features refuse blending on `Rgba32Float`.
+/// Our device requests `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`, so
+/// `create_render_pipeline` validates blend state against those physical
+/// features and rejects OIT's depth-bounds pipeline at world load. Ask the
+/// format, not just the feature bit.
 pub fn features(adapter: &wgpu::Adapter) -> wgpu::Features {
-    adapter.features() & wgpu::Features::FLOAT32_BLENDABLE
+    features_for(
+        adapter.features(),
+        adapter.get_texture_format_features(BOUNDS_FORMAT).flags,
+    )
+}
+
+/// The feature bit alone is not enough: the depth-bounds target must actually
+/// be blendable on this adapter. Kept separate so the decision is testable
+/// without a GPU.
+fn features_for(
+    adapter_features: wgpu::Features,
+    bounds_flags: wgpu::TextureFormatFeatureFlags,
+) -> wgpu::Features {
+    if bounds_flags.contains(wgpu::TextureFormatFeatureFlags::BLENDABLE) {
+        adapter_features & wgpu::Features::FLOAT32_BLENDABLE
+    } else {
+        wgpu::Features::empty()
+    }
 }
 
 pub fn supported(device: &wgpu::Device) -> bool {
     device
         .features()
         .contains(wgpu::Features::FLOAT32_BLENDABLE)
+}
+
+impl super::Renderer {
+    /// Improved Transparency is on and nothing keeps the world off its path (but a world warp,
+    /// decided per frame).
+    pub(super) fn improved_transparency_runs(&self) -> bool {
+        self.improved_transparency
+            && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
+            && self.executor.is_none()
+            && supported(&self.device)
+            && self.oit.as_ref().is_none_or(|oit| !oit.no_room)
+    }
+
+    /// The last frame drew a translucent block's crack through the transparency path, so it takes
+    /// `DESTROY_TYPES_OIT`'s sprites; otherwise the classic multiply draws it, with the classic
+    /// ones. The frame's own path, so a world warp or HDR's layered output is never missed; a
+    /// change shows a frame late.
+    pub fn translucent_cracks_transparent(&self) -> bool {
+        self.cracks_transparent
+    }
 }
 
 /// What a stage's pipelines write: `OIT_*_SNIPPET`'s colour targets.
@@ -158,6 +202,9 @@ pub struct Oit {
     cull: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
     targets: Option<Targets>,
+    /// Its targets had no room (#13624): it is off (`improved_transparency_runs`) until the
+    /// window's size changes (`Renderer::resize`).
+    pub(super) no_room: bool,
 }
 
 impl Oit {
@@ -516,6 +563,7 @@ impl Oit {
             cull,
             composite,
             targets: None,
+            no_room: false,
         }
     }
 
@@ -534,30 +582,64 @@ impl Oit {
         &self.features
     }
 
-    /// Sizes the targets to the world's and writes this frame's projection.
+    /// Sizes the targets to the world's `size`, before the frame chooses how it draws translucent
+    /// things: `false` where there was no room for them (#13624), and the frame draws them the
+    /// ordinary way. Nothing that failed is kept, the old targets go first, and it stays off
+    /// (`no_room`) until the window's size changes.
+    pub fn fit(&mut self, device: &wgpu::Device, size: [u32; 2]) -> bool {
+        if self.targets.as_ref().is_some_and(|t| t.size == size) {
+            return true;
+        }
+        self.targets = None;
+        self.targets =
+            super::frame_targets::made(device, super::frame_targets::Kind::Transparency, || {
+                self.targets_at(device, size)
+            });
+        self.no_room = self.targets.is_none();
+        !self.no_room
+    }
+
+    /// Lets the targets go while it is off for want of room (`no_room`).
+    pub fn let_go(&mut self) {
+        self.targets = None;
+    }
+
+    /// Writes this frame's projection, and makes the depths the water mask and the clouds
+    /// `wants`. Without the room for one, this frame's `run` leaves that part out and it is off
+    /// from the next frame (`no_room`).
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        size: [u32; 2],
+        uploads: &mut super::upload::Uploads,
+        encoder: &mut wgpu::CommandEncoder,
         projection: &Mat4,
         wants: [bool; 2],
     ) {
-        queue.write_buffer(
-            &self.uniform,
-            0,
-            bytemuck::cast_slice(&[projection_terms(projection), [0.0; 2]].concat()),
-        );
+        let [p0, p1] = projection_terms(projection);
+        let terms = [p0, p1, 0.0, 0.0];
+        uploads.buffer(encoder, &self.uniform, 0, bytemuck::cast_slice(&terms));
         let [mask, clouds] = wants;
-        if let Some(t) = self.targets.as_mut().filter(|t| t.size == size) {
-            if mask && t.terrain_depth.is_none() {
-                t.terrain_depth = Some(Depth::new(device, "OIT terrain depth", size));
-            }
-            if clouds && t.cloud_depth.is_none() {
-                t.cloud_depth = Some(Depth::new(device, "OIT cloud depth", size));
-            }
+        let Some(t) = self.targets.as_mut() else {
             return;
+        };
+        let size = t.size;
+        let depth = |label| {
+            super::frame_targets::made(device, super::frame_targets::Kind::Transparency, || {
+                Depth::new(device, label, size)
+            })
+        };
+        if mask && t.terrain_depth.is_none() {
+            t.terrain_depth = depth("OIT terrain depth");
         }
+        if clouds && t.cloud_depth.is_none() {
+            t.cloud_depth = depth("OIT cloud depth");
+        }
+        if (mask && t.terrain_depth.is_none()) || (clouds && t.cloud_depth.is_none()) {
+            self.no_room = true;
+        }
+    }
+
+    fn targets_at(&self, device: &wgpu::Device, size: [u32; 2]) -> Targets {
         let make = |label, format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -607,7 +689,7 @@ impl Oit {
             })
         };
         let [c0, c1] = &views.coefficients;
-        self.targets = Some(Targets {
+        Targets {
             size,
             alone: group(&self.layouts[0], &[]),
             sampled: group(&self.layouts[1], &[&views.culled]),
@@ -617,12 +699,12 @@ impl Oit {
                 &self.layouts[3],
                 &[&views.bounds, c0, c1, &views.accumulated],
             ),
-            terrain_depth: mask.then(|| Depth::new(device, "OIT terrain depth", size)),
-            cloud_depth: clouds.then(|| Depth::new(device, "OIT cloud depth", size)),
+            terrain_depth: None,
+            cloud_depth: None,
             bounds,
             culled,
             views,
-        });
+        }
     }
 
     /// `LevelRenderer.executeOit`: `draw` records the terrain's translucent
@@ -912,6 +994,34 @@ impl Oit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Metal reports `FLOAT32_BLENDABLE` but its physical `Rgba32Float`
+    /// features are not `BLENDABLE`. Requesting the feature there made OIT
+    /// build an invalid depth-bounds pipeline at world load
+    /// (`crash-2026-11-12_22.06.31-client.txt`).
+    #[test]
+    fn a_reported_feature_does_not_enable_oit_without_blendable_bounds() {
+        let reported = wgpu::Features::FLOAT32_BLENDABLE;
+        assert_eq!(
+            features_for(reported, wgpu::TextureFormatFeatureFlags::empty()),
+            wgpu::Features::empty()
+        );
+        assert_eq!(
+            features_for(reported, wgpu::TextureFormatFeatureFlags::BLENDABLE),
+            wgpu::Features::FLOAT32_BLENDABLE
+        );
+    }
+
+    #[test]
+    fn blendable_bounds_without_the_feature_request_nothing() {
+        assert_eq!(
+            features_for(
+                wgpu::Features::empty(),
+                wgpu::TextureFormatFeatureFlags::BLENDABLE
+            ),
+            wgpu::Features::empty()
+        );
+    }
 
     fn validate(source: &str, entries: &[&str]) {
         let module = naga::front::wgsl::parse_str(source).unwrap();
