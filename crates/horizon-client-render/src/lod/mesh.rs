@@ -1,8 +1,10 @@
 //! Exposed voxel-column faces, merged without changing their block-scale UVs.
-use super::{Column, Span, Spans, TileKey};
+#[cfg(test)]
+use super::Column;
+use super::{Span, Spans, TileKey};
 use crate::{
     fast_hash::{FxHashMap, FxHashSet},
-    mesher::{OPAQUE_LAYER, SectionMesh, TerrainVertex, fluid_face},
+    mesher::{OPAQUE_LAYER, SectionMesh, TerrainVertex, as_fluid},
     streaming::WorkerContext,
 };
 use horizon_assets::model::Direction;
@@ -15,7 +17,7 @@ const CELLS: usize = 16;
 pub(super) struct EdgeColumn<'a> {
     pub start: i32,
     pub end: i32,
-    pub column: &'a Column,
+    pub spans: &'a [Span],
     /// The neighbour is planned but not drawn yet: its terrain is not known
     /// to be empty, so the sides facing it are left out, not drawn as walls.
     pub unknown: bool,
@@ -60,22 +62,22 @@ struct Material<L> {
 }
 /// What a far face carries of its quad's look, chosen once per tile: nothing (`()`) where tiles
 /// carry no looks, so the paints, materials and segments a tile keeps and the key its faces
-/// merge by have their sizes before looks; the `QuadLook`'s words (`[u32; 3]`) where they do.
+/// merge by have their sizes before looks; the `QuadLook`'s words (`[u32; 2]`) where they do.
 trait Look: Copy + Ord {
-    fn make(look: impl FnOnce() -> [u32; 3]) -> Self;
-    fn words(self) -> [u32; 3];
+    fn make(look: impl FnOnce() -> [u32; 2]) -> Self;
+    fn words(self) -> [u32; 2];
 }
 impl Look for () {
-    fn make(_: impl FnOnce() -> [u32; 3]) -> Self {}
-    fn words(self) -> [u32; 3] {
-        [0; 3]
+    fn make(_: impl FnOnce() -> [u32; 2]) -> Self {}
+    fn words(self) -> [u32; 2] {
+        [0; 2]
     }
 }
-impl Look for [u32; 3] {
-    fn make(look: impl FnOnce() -> [u32; 3]) -> Self {
+impl Look for [u32; 2] {
+    fn make(look: impl FnOnce() -> [u32; 2]) -> Self {
         look()
     }
-    fn words(self) -> [u32; 3] {
+    fn words(self) -> [u32; 2] {
         self
     }
 }
@@ -85,12 +87,15 @@ pub(super) struct Mesher {
     /// Whether quads get their looks (`crate::mesher::QuadLook`), as the section mesher's
     /// `looks`: 0 not, 1 with the Overworld's face shades, 2 with the Nether's.
     pub(super) looks: u8,
+    /// A `shaders/` pack draws the terrain: the vertex alpha as the section mesher's
+    /// `shader_pack` gives it (`crate::mesher::for_shaders_format`).
+    pub(super) shader_pack: bool,
 }
 impl Mesher {
     pub(super) fn mesh(
         &mut self,
         key: TileKey,
-        columns: &[&Column],
+        columns: &[&[Span]],
         covered: &FxHashSet<(i32, i32)>,
         covered_bounds: Option<[i32; 4]>,
         context: &WorkerContext,
@@ -105,7 +110,7 @@ impl Mesher {
             }
             true => {
                 let material = |s: &Span, d, at| self.material(s, d, at, context);
-                mesh_columns_with_edges::<[u32; 3]>(key, columns, c, b, neighbors, finer, material)
+                mesh_columns_with_edges::<[u32; 2]>(key, columns, c, b, neighbors, finer, material)
             }
         }
     }
@@ -244,20 +249,19 @@ impl Mesher {
                         Tint::Water => biome.water,
                         Tint::Constant(color) => color,
                     };
-                    let channel = |shift: u32| (((rgb >> shift) & 255u32) as f32 * shade) as u32;
-                    // The colour keeps the Overworld's shades in every dimension; a shader pack's
-                    // `shade` is the dimension's.
-                    let level = || context.tables.facts(span.state).map_or(0, |f| f.emission);
+                    let level = context.tables.facts(span.state).map_or(0, |f| f.emission);
+                    let color = far_color(
+                        rgb,
+                        shade,
+                        (context.tables.hdr_tier(span.state), level),
+                        fluid.then_some(direction),
+                        self.shader_pack,
+                    );
                     Paint {
-                        look: L::make(|| far_look(looks, rgb, direction, fluid, level)),
+                        look: L::make(|| far_look(looks, rgb, direction, fluid)),
                         layer: face.layer,
                         light: span.light,
-                        // The HDR tier, as the section mesher writes it, so a light source
-                        // keeps shining across the LOD boundary.
-                        color: crate::mesher::emitting(
-                            channel(16) | channel(8) << 8 | channel(0) << 16 | 0xff000000,
-                            context.tables.hdr_tier(span.state),
-                        ),
+                        color,
                         translucent: face.translucent,
                     }
                 })
@@ -268,25 +272,92 @@ impl Mesher {
     }
 }
 
-/// A far face's `QuadLook` words (`Mesher::looks`: 0 none, 1 the Overworld's shades, 2 the
-/// Nether's) for its tint 0xRRGGBB and its block's light `level`: no ambient occlusion. A
-/// `fluid`'s side has the top's shade times the side's, as the section mesher gives it.
-pub(crate) fn far_look(
-    looks: u8,
+/// A far face's vertex colour: tint 0xRRGGBB times `shade`, with its block's HDR tier and light
+/// level (`light`, from `MeshTables::hdr_tier` and the block's emission) as the section mesher
+/// writes them, so a light source keeps shining across the LOD boundary; and the same fluid flag
+/// on a `fluid` face, so the material stage's water reaches the distant tiles too. A
+/// `shader_pack` takes the `shaders/` format (`crate::mesher::for_shaders_format`).
+fn far_color(
     rgb: u32,
-    direction: Direction,
-    fluid: bool,
-    level: impl Fn() -> u8,
-) -> [u32; 3] {
+    shade: f32,
+    light: (u8, u8),
+    fluid: Option<Direction>,
+    shader_pack: bool,
+) -> u32 {
+    // The colour keeps the Overworld's shades in every dimension; a shader pack's `shade` is the
+    // dimension's.
+    let channel = |shift: u32| (((rgb >> shift) & 255u32) as f32 * shade) as u32;
+    let color = crate::mesher::giving_off(
+        crate::mesher::emitting(
+            channel(16) | channel(8) << 8 | channel(0) << 16 | 0xff000000,
+            light.0,
+        ),
+        light.1,
+    );
+    if shader_pack {
+        crate::mesher::for_shaders_format(color, fluid.map(|d| d as usize))
+    } else if fluid.is_some() {
+        as_fluid(color)
+    } else {
+        color
+    }
+}
+
+/// The top vertex of a far tile of one block whose HDR tier and light level are `light`, on
+/// sprite `layer`, as the LOD mesher emits it for a pack that isn't `shaders/`.
+#[cfg(test)]
+pub(crate) fn far_top_vertex(light: (u8, u8), layer: u16) -> TerrainVertex {
+    let span = Span {
+        min: 0,
+        max: 4,
+        state: BlockStateId(1),
+        biome: 0,
+        light: 240,
+    };
+    let columns: Vec<[Span; 1]> = vec![[span]; CELLS * CELLS];
+    let refs: Vec<&[Span]> = columns.iter().map(|s| s.as_slice()).collect();
+    let key = TileKey {
+        x: 0,
+        z: 0,
+        level: 0,
+    };
+    let paint = |s: &Span, _, _| Material::<()> {
+        faces: [
+            Some(Paint {
+                layer,
+                light: s.light,
+                color: far_color(0xffffff, 1.0, light, None, false),
+                translucent: false,
+                look: (),
+            }),
+            None,
+        ],
+        fluid: 0,
+        opaque: true,
+    };
+    let (no_edges, covered) = (Default::default(), FxHashSet::default());
+    let mesh = mesh_columns_with_edges(key, &refs, &covered, None, &no_edges, &[], paint);
+    let top = mesh.solid.iter().map(|v| v.pos[1]).fold(f32::MIN, f32::max);
+    let quads = mesh.solid.as_chunks::<4>().0;
+    quads
+        .iter()
+        .find(|q| q.iter().all(|v| v.pos[1] == top))
+        .unwrap()[0]
+}
+
+/// A far face's `QuadLook` words (`Mesher::looks`: 0 none, 1 the Overworld's shades, 2 the
+/// Nether's) for its tint 0xRRGGBB: no ambient occlusion. A `fluid`'s side has the top's shade
+/// times the side's, as the section mesher gives it.
+pub(crate) fn far_look(looks: u8, rgb: u32, direction: Direction, fluid: bool) -> [u32; 2] {
     if looks == 0 {
-        return [0; 3];
+        return [0; 2];
     }
     let nether = looks == 2;
     let mut shade = crate::mesher::cardinal_shade(nether, direction);
     if fluid && !matches!(direction, Direction::Up | Direction::Down) {
         shade *= crate::mesher::cardinal_shade(nether, Direction::Up);
     }
-    crate::mesher::QuadLook::new(rgb, shade, direction as u32, [1.0; 4], level()).0
+    crate::mesher::QuadLook::new(rgb, shade, direction as u32, [1.0; 4]).0
 }
 
 struct Segment<'a, L> {
@@ -308,6 +379,8 @@ fn hides<L>(
         || (material.fluid != 0 && material.fluid == current_material.fluid)
 }
 
+/// What faces merge by. The colour's alpha holds the HDR class and the block's light level
+/// (`mesher::giving_off`), which a pack's `emission` reads, so faces of other levels stay apart.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct FaceKey {
     direction: Direction,
@@ -336,20 +409,13 @@ fn add_face<L: Look>(
 ) {
     for (overlay, paint) in material.faces.into_iter().enumerate() {
         let Some(paint) = paint else { continue };
-        // The same fluid flags the section mesher sets, so the material stage's water
-        // reaches the distant tiles too and the LOD boundary keeps one look.
-        let color = if material.fluid != 0 {
-            fluid_face(paint.color, direction as usize)
-        } else {
-            paint.color
-        };
         let key = FaceKey {
             direction,
             plane: plane.to_bits(),
             overlay: overlay as u8,
             layer: paint.layer,
             light: paint.light,
-            color,
+            color: paint.color,
             translucent: paint.translucent,
         };
         faces.entry((key, paint.look)).or_default().push(rect);
@@ -377,7 +443,7 @@ fn mesh_columns_with_neighbors(
 ) -> SectionMesh {
     assert!(neighbors.is_empty() || neighbors.len() == 4 * CELLS);
     let stride = key.size() / CELLS as i32;
-    let columns: Vec<&Column> = columns.iter().collect();
+    let columns: Vec<&[Span]> = columns.iter().map(|c| c.spans.as_slice()).collect();
     let edges = std::array::from_fn(|side| {
         neighbors
             .get(side * CELLS..(side + 1) * CELLS)
@@ -387,7 +453,7 @@ fn mesh_columns_with_neighbors(
             .map(|(row, column)| EdgeColumn {
                 start: row as i32 * stride,
                 end: (row as i32 + 1) * stride,
-                column,
+                spans: column.spans.as_slice(),
                 unknown: false,
             })
             .collect()
@@ -408,9 +474,9 @@ const HEIGHTMAP_LEVEL: u8 = 6;
 /// `column` as a heightmap: its top solid span reaching down to the bottom of
 /// the world (so the walls toward lower neighbours are one face of the
 /// surface's material, merged along the cliff), and the fluid over it.
-fn heightmap(column: &Column, mut fluid: impl FnMut(&Span) -> bool) -> Column {
-    let Some((top, below)) = column.spans.split_last() else {
-        return column.clone();
+fn heightmap(column: &[Span], mut fluid: impl FnMut(&Span) -> bool) -> Spans {
+    let Some((top, below)) = column.split_last() else {
+        return Spans::new();
     };
     let ground = |span: &Span| Span {
         min: crate::chunk::MIN_Y as i16,
@@ -431,14 +497,11 @@ fn heightmap(column: &Column, mut fluid: impl FnMut(&Span) -> bool) -> Column {
     } else {
         spans.push(*top);
     }
-    Column {
-        surface: column.surface,
-        spans,
-    }
+    spans
 }
 fn mesh_columns_with_edges<L: Look>(
     key: TileKey,
-    columns: &[&Column],
+    columns: &[&[Span]],
     covered: &FxHashSet<(i32, i32)>,
     covered_bounds: Option<[i32; 4]>,
     neighbors: &[Vec<EdgeColumn<'_>>; 4],
@@ -447,9 +510,9 @@ fn mesh_columns_with_edges<L: Look>(
 ) -> SectionMesh {
     assert_eq!(columns.len(), CELLS * CELLS);
     // The heightmap columns are built here and borrowed like the tile's own.
-    let heightmap_columns: Vec<Column>;
-    let heightmap_refs: Vec<&Column>;
-    let heightmap_edges: [Vec<Column>; 4];
+    let heightmap_columns: Vec<Spans>;
+    let heightmap_refs: Vec<&[Span]>;
+    let heightmap_edges: [Vec<Spans>; 4];
     let heightmap_neighbors: [Vec<EdgeColumn<'_>>; 4];
     let (columns, neighbors) = if key.level >= HEIGHTMAP_LEVEL {
         let [ox, _, oz] = key.origin();
@@ -460,18 +523,18 @@ fn mesh_columns_with_edges<L: Look>(
             .collect();
         heightmap_edges = neighbors.each_ref().map(|side| {
             side.iter()
-                .map(|edge| heightmap(edge.column, &mut fluid))
+                .map(|edge| heightmap(edge.spans, &mut fluid))
                 .collect()
         });
-        heightmap_refs = heightmap_columns.iter().collect();
+        heightmap_refs = heightmap_columns.iter().map(Spans::as_slice).collect();
         heightmap_neighbors = std::array::from_fn(|side| {
             neighbors[side]
                 .iter()
                 .zip(&heightmap_edges[side])
-                .map(|(edge, column)| EdgeColumn {
+                .map(|(edge, spans)| EdgeColumn {
                     start: edge.start,
                     end: edge.end,
-                    column,
+                    spans: spans.as_slice(),
                     unknown: edge.unknown,
                 })
                 .collect()
@@ -529,26 +592,25 @@ fn mesh_columns_with_edges<L: Look>(
     let mut materials = Vec::new();
     let prepared: Vec<Vec<Segment<'_, L>>> = filled
         .iter()
-        .map(|column| column.as_ref())
-        .chain(neighbors.iter().flatten().map(|edge| edge.column))
+        .map(FilledSpans::as_slice)
+        .chain(neighbors.iter().flatten().map(|edge| edge.spans))
         .enumerate()
         .map(|(index, column)| {
             let at = centre(index);
             materials.clear();
-            materials.extend(column.spans.iter().map(|s| material(s, Direction::Up, at)));
+            materials.extend(column.iter().map(|s| material(s, Direction::Up, at)));
             column
-                .spans
                 .iter()
                 .enumerate()
                 .filter(|(_, span)| span.min < span.max)
                 .map(|(i, span)| {
                     let current = materials[i];
-                    let top = !column.spans.get(i + 1).is_some_and(|next| {
+                    let top = !column.get(i + 1).is_some_and(|next| {
                         next.min == span.max && hides(next, materials[i + 1], span, current)
                     });
                     let bottom = i == 0
-                        || !(column.spans[i - 1].max == span.min
-                            && hides(&column.spans[i - 1], materials[i - 1], span, current));
+                        || !(column[i - 1].max == span.min
+                            && hides(&column[i - 1], materials[i - 1], span, current));
                     Segment {
                         span,
                         min: f32::from(span.min),
@@ -810,7 +872,7 @@ mod refinement_tests {
             };
             256
         ];
-        let columns: Vec<&Column> = columns.iter().collect();
+        let columns: Vec<&[Span]> = columns.iter().map(|c| c.spans.as_slice()).collect();
         let mesh = mesh_columns_with_edges::<()>(
             parent,
             &columns,
@@ -889,16 +951,16 @@ mod refinement_tests {
             };
             256
         ];
-        let columns: Vec<&Column> = columns.iter().collect();
+        let columns: Vec<&[Span]> = columns.iter().map(|c| c.spans.as_slice()).collect();
         let empty = Column::default();
         let east_quads = |unknown: bool| {
-            let edge = |column| EdgeColumn {
+            let edge = EdgeColumn {
                 start: 0,
                 end: 16,
-                column,
+                spans: empty.spans.as_slice(),
                 unknown,
             };
-            let neighbors = [Vec::new(), vec![edge(&empty)], Vec::new(), Vec::new()];
+            let neighbors = [Vec::new(), vec![edge], Vec::new(), Vec::new()];
             let mesh = mesh_columns_with_edges::<()>(
                 key,
                 &columns,
@@ -933,6 +995,22 @@ mod refinement_tests {
     }
 }
 
+/// Result of [`fill_buried_gaps`]: borrows unchanged columns directly and
+/// keeps changed short columns in inline [`Spans`] without per-column `Vec`
+/// allocations.
+enum FilledSpans<'a> {
+    Borrowed(&'a [Span]),
+    Owned(Spans),
+}
+impl FilledSpans<'_> {
+    #[inline]
+    fn as_slice(&self) -> &[Span] {
+        match self {
+            Self::Borrowed(spans) => spans,
+            Self::Owned(spans) => spans.as_slice(),
+        }
+    }
+}
 /// The tile's columns with the gaps no open air reaches filled with the
 /// material below them, or the fluid above them (kelp and seagrass leave gaps
 /// in water): a cave seen from nowhere adds no faces. A gap is open when a
@@ -943,25 +1021,22 @@ mod refinement_tests {
 /// block. Unknown neighbours, and cells that `whole` rejects (they meet
 /// full-detail or finer terrain), count as open; those cells keep their gaps.
 fn fill_buried_gaps<'a>(
-    columns: &'a [&'a Column],
+    columns: &'a [&'a [Span]],
     neighbors: &'a [Vec<EdgeColumn<'a>>; 4],
     stride: i32,
     whole: impl Fn(usize, usize) -> bool,
     mut fluid: impl FnMut(&Span) -> bool,
-) -> Vec<std::borrow::Cow<'a, Column>> {
-    use std::borrow::Cow;
-    let top = |column: &Column| {
-        column
-            .spans
+) -> Vec<FilledSpans<'a>> {
+    let top = |spans: &[Span]| {
+        spans
             .iter()
             .rev()
             .find(|span| span.min < span.max)
             .map_or(i16::MIN, |span| span.max)
     };
     // Each column's gaps: the index of the span above, the gap's bottom and top.
-    let gaps_of = |column: &Column| -> Vec<(usize, i16, i16)> {
-        column
-            .spans
+    let gaps_of = |spans: &[Span]| -> Vec<(usize, i16, i16)> {
+        spans
             .windows(2)
             .enumerate()
             .filter(|(_, pair)| pair[0].max < pair[1].min)
@@ -994,7 +1069,7 @@ fn fill_buried_gaps<'a>(
     };
     let edge = |side: usize, cell: usize| {
         touching(side, cell)
-            .map(|edge| top(edge.column))
+            .map(|edge| top(edge.spans))
             .min()
             .unwrap_or(i16::MIN)
     };
@@ -1002,7 +1077,7 @@ fn fill_buried_gaps<'a>(
     // see: it counts as open.
     let edge_gap = |side: usize, cell: usize, gap: (i16, i16)| {
         touching(side, cell).any(|edge| {
-            gaps_of(edge.column)
+            gaps_of(edge.spans)
                 .iter()
                 .any(|&(_, lo, hi)| meets((lo, hi), gap))
         })
@@ -1066,31 +1141,36 @@ fn fill_buried_gaps<'a>(
     columns
         .iter()
         .enumerate()
-        .map(|(i, column)| {
-            let column = *column;
+        .map(|(i, &spans)| {
             if open[i].iter().all(|&open| open) {
-                return Cow::Borrowed(column);
+                return FilledSpans::Borrowed(spans);
             }
-            let mut filled = Column {
-                surface: column.surface,
-                spans: Spans::with_capacity(column.spans.len()),
-            };
-            for (k, &span) in column.spans.iter().enumerate() {
+            let mut filled = Spans::with_capacity(spans.len());
+            for (k, &span) in spans.iter().enumerate() {
                 let mut span = span;
                 let buried = gaps[i]
                     .iter()
                     .zip(&open[i])
                     .any(|(&(above, _, _), &open)| above == k && !open);
-                if buried && let Some(below) = filled.spans.last_mut() {
+                if buried && let Some(below) = filled.last_mut() {
                     if fluid(&span) {
                         span.min = below.max;
                     } else {
                         below.max = span.min;
                     }
                 }
-                filled.push(span);
+                if let Some(last) = filled.last_mut()
+                    && last.max == span.min
+                    && last.state == span.state
+                    && last.biome == span.biome
+                    && last.light == span.light
+                {
+                    last.max = span.max;
+                } else {
+                    filled.push(span);
+                }
             }
-            Cow::Owned(filled)
+            FilledSpans::Owned(filled)
         })
         .collect()
 }
@@ -1247,7 +1327,7 @@ fn emit_quad(mesh: &mut SectionMesh, grouped: (FaceKey, impl Look), rect: Rect, 
     ) {
         points.reverse()
     }
-    if look != [0; 3] {
+    if look != [0; 2] {
         let (looks, quads) = match key.translucent {
             true => (&mut mesh.translucent_looks, mesh.translucent.len() / 4),
             false => (&mut mesh.solid_looks, mesh.solid.len() / 4),
@@ -1388,15 +1468,15 @@ mod tests {
             surface: None,
             spans: vec![span(0, 60, 1), span(60, 63, 3), span(63, 64, 4)].into(),
         };
-        let flat = heightmap(&strata, fluid);
-        assert_eq!(flat.spans, [span(-64, 64, 4)]);
+        let flat = heightmap(&strata.spans, fluid);
+        assert_eq!(flat, [span(-64, 64, 4)]);
         let sea = Column {
             surface: None,
             spans: vec![span(0, 50, 1), span(50, 62, 2)].into(),
         };
-        let flat = heightmap(&sea, fluid);
-        assert_eq!(flat.spans, [span(-64, 50, 1), span(50, 62, 2)]);
-        assert!(heightmap(&columns()[0], fluid).spans.is_empty());
+        let flat = heightmap(&sea.spans, fluid);
+        assert_eq!(flat, [span(-64, 50, 1), span(50, 62, 2)]);
+        assert!(heightmap(&columns()[0].spans, fluid).is_empty());
         // A rolling landscape of strata: far tiles need a fraction of the quads.
         let rolling: Vec<Column> = (0..CELLS * CELLS)
             .map(|i| {
@@ -1464,6 +1544,85 @@ mod tests {
         let p = |i: usize| glam::Vec3::from(q[i].pos);
         (p(1) - p(0)).cross(p(2) - p(0))
     }
+    /// Far faces that differ only in their block's light level stay apart, each keeping its own:
+    /// the level is in the vertex colour, where a pack reads `emission` with no looks.
+    #[test]
+    fn far_faces_of_other_light_levels_stay_apart() {
+        // A checkerboard of states 1 and 3: the same face, giving off `levels` by state.
+        fn painted(span: &Span, levels: [u8; 2]) -> Material<()> {
+            let level = levels[usize::from(span.state.0 == 3)];
+            let paint = Paint {
+                layer: 1,
+                light: span.light,
+                color: crate::mesher::giving_off(u32::MAX, level),
+                translucent: false,
+                look: (),
+            };
+            Material {
+                faces: [Some(paint), None],
+                fluid: 0,
+                opaque: true,
+            }
+        }
+        let mut columns = columns();
+        for (i, column) in columns.iter_mut().enumerate() {
+            let state = if (i % CELLS + i / CELLS).is_multiple_of(2) {
+                3
+            } else {
+                1
+            };
+            column.spans = vec![span(0, 4, state)].into();
+        }
+        let refs: Vec<&[Span]> = columns.iter().map(|c| c.spans.as_slice()).collect();
+        let key = TileKey {
+            x: 0,
+            z: 0,
+            level: 0,
+        };
+        let (no_edges, set) = (Default::default(), FxHashSet::default());
+        let mesh = |levels: [u8; 2]| {
+            mesh_columns_with_edges::<()>(key, &refs, &set, None, &no_edges, &[], |s, _, _| {
+                painted(s, levels)
+            })
+        };
+        // The top faces: each one's cell (from its centre) and level.
+        let tops = |mesh: &SectionMesh| {
+            let top = mesh.solid.iter().map(|v| v.pos[1]).fold(f32::MIN, f32::max);
+            let (lo, hi) = mesh.solid.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| {
+                (
+                    lo.min(v.pos[0]).min(v.pos[2]),
+                    hi.max(v.pos[0]).max(v.pos[2]),
+                )
+            });
+            let cell = (hi - lo) / CELLS as f32;
+            let quads = mesh.solid.as_chunks::<4>().0;
+            quads
+                .iter()
+                .filter(|q| q.iter().all(|v| v.pos[1] == top))
+                .map(|q| {
+                    let centre = |k: usize| q.iter().map(|v| v.pos[k]).sum::<f32>() / 4.0;
+                    let at = |k: usize| ((centre(k) - lo) / cell) as i32;
+                    ((at(0), at(2)), 15 - (q[0].color >> 28))
+                })
+                .collect::<FxHashMap<(i32, i32), u32>>()
+        };
+        // Both states at one level, unlit or lit, the top merges and keeps that level; at two,
+        // every cell is its own face with its own state's: state 3's (x + z even) 12, state 1's 0.
+        for level in [0, 5] {
+            let alike = tops(&mesh([level, level]));
+            assert!(alike.len() < CELLS * CELLS, "{level}: {alike:?}");
+            assert!(
+                alike.values().all(|&l| l == u32::from(level)),
+                "{level}: {alike:?}"
+            );
+        }
+        let lit = tops(&mesh([0, 12]));
+        assert_eq!(lit.len(), CELLS * CELLS, "{lit:?}");
+        for (&(x, z), &level) in &lit {
+            let want = if (x + z) % 2 == 0 { 12 } else { 0 };
+            assert_eq!(level, want, "cell {:?}", (x, z));
+        }
+    }
     /// A far tile's looks: each face's look gives back its vertex colour (the Overworld's
     /// shades, no ambient occlusion; the Nether's shades differ only in its look), and the
     /// looks stay with their quads through the merge, the solid sort and the compact layout.
@@ -1477,10 +1636,10 @@ mod tests {
         };
         for rgb in [0xffffff, 0x91bd59, 0x3f76e4, 0x010203] {
             for d in Direction::ALL {
-                let [a, ao, level] = far_look(1, rgb, d, false, || 7);
-                assert_eq!((ao, level, a >> 27 & 7), (u32::MAX, 7, d as u32));
+                let [a, ao] = far_look(1, rgb, d, false);
+                assert_eq!((ao, a >> 27 & 7), (u32::MAX, d as u32));
                 let s = crate::mesher::SHADES[(a >> 24 & 7) as usize - 1];
-                let nether = far_look(2, rgb, d, false, || 7)[0];
+                let nether = far_look(2, rgb, d, false)[0];
                 let n = crate::mesher::SHADES[(nether >> 24 & 7) as usize - 1];
                 assert_eq!(n, crate::mesher::cardinal_shade(true, d));
                 for shift in [0, 8, 16] {
@@ -1492,7 +1651,7 @@ mod tests {
                     );
                 }
             }
-            assert_eq!(far_look(0, rgb, Direction::Up, false, || 7), [0; 3]);
+            assert_eq!(far_look(0, rgb, Direction::Up, false), [0; 2]);
         }
         // Each paint's look names its layer and face.
         let looked = |span: &Span, direction: Direction, _: [i32; 2]| {
@@ -1502,7 +1661,7 @@ mod tests {
                 light: span.light,
                 color: u32::MAX,
                 translucent: water,
-                look: [span.state.0, direction as u32, u32::from(span.light)],
+                look: [span.state.0, direction as u32],
             };
             Material {
                 faces: [Some(paint), None],
@@ -1530,9 +1689,9 @@ mod tests {
             z: 0,
             level: 0,
         };
-        let refs: Vec<&Column> = columns.iter().collect();
+        let refs: Vec<&[Span]> = columns.iter().map(|c| c.spans.as_slice()).collect();
         let no_edges = Default::default();
-        let mut mesh = mesh_columns_with_edges::<[u32; 3]>(
+        let mut mesh = mesh_columns_with_edges::<[u32; 2]>(
             key,
             &refs,
             &FxHashSet::default(),
@@ -1563,7 +1722,7 @@ mod tests {
             let quads = vertices.as_chunks::<4>().0;
             assert!(quads.len() > 20 && looks.len() == quads.len());
             for (q, look) in quads.iter().zip(looks) {
-                let [layer, direction, _] = look.0;
+                let [layer, direction] = look.0;
                 assert_eq!(layer, u32::from(q[0].layer));
                 // A quad's winding gives its normal against the face it shows.
                 let n = face(q);
@@ -1602,7 +1761,7 @@ mod tests {
                 light: span.light,
                 color: u32::MAX,
                 translucent: water,
-                look: L::make(|| [0; 3]),
+                look: L::make(|| [0; 2]),
             };
             Material {
                 faces: [Some(paint), None],
@@ -1624,13 +1783,13 @@ mod tests {
             z: 0,
             level: 0,
         };
-        let refs: Vec<&Column> = columns.iter().collect();
+        let refs: Vec<&[Span]> = columns.iter().map(|c| c.spans.as_slice()).collect();
         let no_edges = Default::default();
         let set = FxHashSet::default();
         let plain_mesh =
             mesh_columns_with_edges::<()>(key, &refs, &set, None, &no_edges, &[], plain);
         let looked =
-            mesh_columns_with_edges::<[u32; 3]>(key, &refs, &set, None, &no_edges, &[], plain);
+            mesh_columns_with_edges::<[u32; 2]>(key, &refs, &set, None, &no_edges, &[], plain);
         assert!(plain_mesh.solid.len() > 80 && !plain_mesh.translucent.is_empty());
         for (a, b) in [
             (&plain_mesh.solid, &looked.solid),
@@ -1822,15 +1981,15 @@ mod tests {
         let hill = || EdgeColumn {
             start: 0,
             end: CELLS as i32,
-            column: &hill_column,
+            spans: hill_column.spans.as_slice(),
             unknown: false,
         };
         let neighbors = [vec![hill()], vec![hill()], vec![hill()], vec![hill()]];
         let fill = |columns: &[Column]| -> Vec<Vec<Span>> {
-            let columns: Vec<&Column> = columns.iter().collect();
+            let columns: Vec<&[Span]> = columns.iter().map(|c| c.spans.as_slice()).collect();
             fill_buried_gaps(&columns, &neighbors, 1, |_, _| true, |_| false)
                 .iter()
-                .map(|filled| filled.spans.as_slice().to_vec())
+                .map(|filled| filled.as_slice().to_vec())
                 .collect()
         };
         let mut forest = vec![column(vec![span(0, 5, 1), span(10, 14, 3)]); CELLS * CELLS];
@@ -1964,7 +2123,7 @@ mod tests {
             vec![EdgeColumn {
                 start: 0,
                 end: 32,
-                column: &columns[0],
+                spans: columns[0].spans.as_slice(),
                 unknown: false,
             }]
         });
@@ -1978,23 +2137,23 @@ mod tests {
             EdgeColumn {
                 start: 0,
                 end: 1,
-                column: &columns[0],
+                spans: columns[0].spans.as_slice(),
                 unknown: false,
             },
             EdgeColumn {
                 start: 1,
                 end: 2,
-                column: &low,
+                spans: low.spans.as_slice(),
                 unknown: false,
             },
             EdgeColumn {
                 start: 2,
                 end: 32,
-                column: &columns[0],
+                spans: columns[0].spans.as_slice(),
                 unknown: false,
             },
         ];
-        let columns: Vec<&Column> = columns.iter().collect();
+        let columns: Vec<&[Span]> = columns.iter().map(|c| c.spans.as_slice()).collect();
         let mesh = mesh_columns_with_edges::<()>(
             key,
             &columns,
