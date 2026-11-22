@@ -2,7 +2,7 @@
 //! with `IS_GUI`): servers' HUDs that their pack's vertex shader moves to the screen's corners,
 //! and text effects in its fragment shader. Without one the text draws natively.
 
-use std::path::Path;
+use crate::resource_source::ResourceSource;
 use std::sync::Arc;
 
 use crate::core_shader::{CoreProgram, Glue};
@@ -31,7 +31,7 @@ const GLUE: Glue = Glue {
 };
 
 /// The packs' text shader, when a pack replaces either stage.
-pub(super) fn load(root: &Path, defaults: &Path) -> Option<Arc<CoreProgram>> {
+pub(super) fn load(root: &ResourceSource, defaults: &ResourceSource) -> Option<Arc<CoreProgram>> {
     load_core(root, defaults, "text", &["IS_GUI"], &GLUE)
 }
 
@@ -39,16 +39,20 @@ pub(super) fn load(root: &Path, defaults: &Path) -> Option<Arc<CoreProgram>> {
 /// game's own resources, which have vanilla's and its includes), when a pack replaces either
 /// stage.
 pub(super) fn load_core(
-    root: &Path,
-    defaults: &Path,
+    root: &ResourceSource,
+    defaults: &ResourceSource,
     name: &str,
     defines: &[&str],
     glue: &Glue,
 ) -> Option<Arc<CoreProgram>> {
-    if root == defaults {
-        return None;
-    }
-    let read = |base: &Path, path: &str| std::fs::read_to_string(base.join(path)).ok();
+    // The game passes the packs' resolved source as both: a shader is the pack's own when it
+    // differs from the layer the packs were resolved over.
+    let defaults = if defaults.same_generation(root) {
+        defaults.underlay().unwrap_or(defaults)
+    } else {
+        defaults
+    };
+    let read = |base: &ResourceSource, path: &str| base.read_to_string(path).ok();
     let own =
         |path: &str| read(root, path).filter(|text| read(defaults, path).as_ref() != Some(text));
     let vertex_path = format!("assets/minecraft/shaders/core/{name}.vsh");
@@ -76,7 +80,12 @@ pub(super) fn load_core(
     }
 }
 
-pub(super) fn load_shaders(atlas: &mut super::HudAtlas, root: &Path, defaults: &Path) {
+/// The packs' core shaders the atlas carries (text, block outline, sky, stars).
+pub(super) fn load_shaders(
+    atlas: &mut super::HudAtlas,
+    root: &ResourceSource,
+    defaults: &ResourceSource,
+) {
     atlas.text_shaders.gui = load(root, defaults);
     atlas.lines_shader = load_core(
         root,
@@ -329,9 +338,57 @@ pub(super) fn text_runs(
 mod tests {
     use super::*;
 
+    const VSH: &str = "#version 330\nin vec3 Position;\nin vec4 Color;\nin vec2 UV0;\n\
+        out vec4 vertexColor;\nout vec2 texCoord0;\n\
+        void main() {\n    gl_Position = vec4(Position, 1.0);\n    vertexColor = Color;\n    texCoord0 = UV0;\n}\n";
+    const FSH: &str = "#version 330\nuniform sampler2D Sampler0;\nin vec4 vertexColor;\nin vec2 texCoord0;\n\
+        out vec4 fragColor;\n\
+        void main() {\n    fragColor = texture(Sampler0, texCoord0) * vertexColor;\n}\n";
+
+    /// A server pack reaches the atlas as one resolved source passed as root and defaults.
+    #[test]
+    fn a_packs_text_shader_is_used_from_the_resolved_source() {
+        use crate::resource_source::Resource;
+        let dir = tempfile::tempdir().unwrap();
+        let (vanilla, pack) = (dir.path().join("vanilla"), dir.path().join("pack"));
+        let vsh = "assets/minecraft/shaders/core/text.vsh";
+        let fsh = "assets/minecraft/shaders/core/text.fsh";
+        for (root, vertex) in [
+            (&vanilla, VSH.to_owned()),
+            (&pack, VSH.replace("1.0)", "2.0)")),
+        ] {
+            std::fs::create_dir_all(root.join("assets/minecraft/shaders/core")).unwrap();
+            std::fs::write(root.join(vsh), vertex).unwrap();
+            std::fs::write(root.join(fsh), FSH).unwrap();
+        }
+        let base = ResourceSource::directory(vanilla.clone());
+        let resolve = || {
+            let files = [
+                (
+                    vsh,
+                    Resource::file(ResourceSource::directory(pack.clone()), vsh.into()),
+                ),
+                (fsh, Resource::file(base.clone(), fsh.into())),
+            ]
+            .into_iter()
+            .map(|(name, resource)| (name.to_owned(), resource))
+            .collect();
+            ResourceSource::layered(files, base.clone())
+        };
+        let resolved = resolve();
+        assert!(load(&resolved, &resolved).is_some(), "the pack's shader");
+        assert!(load(&base, &base).is_none(), "vanilla's own draws natively");
+        // Its own top layer holds the pack's shader; the vanilla one is only underneath.
+        let explicit = resolve();
+        assert!(
+            load(&resolved, &explicit).is_none(),
+            "a caller's own defaults stay the baseline"
+        );
+    }
+
     #[test]
     fn the_gui_projection_maps_gui_pixels_to_the_screen() {
-        let mut batch = HudBatch::new([1920, 1080]);
+        let mut batch = HudBatch::scratch([1920, 1080]);
         batch.scale = 4.0;
         let data: Vec<f32> =
             bytemuck::cast_slice(&uniforms(&batch, [1920, 1080], batch.scale)).to_vec();

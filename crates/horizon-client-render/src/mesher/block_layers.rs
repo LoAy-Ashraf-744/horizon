@@ -1,7 +1,7 @@
 //! Shader-pack layer routing after vanilla face generation and before sorting/upload.
 //! Source-state metadata, not a sprite, identifies each quad's selection.
 
-use super::{MeshTables, OPAQUE_LAYER, SectionMesh, TerrainSource, packed};
+use super::{MeshTables, OPAQUE_LAYER, QuadLook, SectionMesh, TerrainSource, packed};
 use horizon_shaders::{BlockLayers, RenderLayer};
 use horizon_world::{
     fluid::{FluidKind, FluidState},
@@ -103,9 +103,14 @@ impl SectionMesh {
         let solid_sources = std::mem::take(&mut self.solid_sources);
         let translucent_sources = std::mem::take(&mut self.translucent_sources);
         let tints = std::mem::take(&mut self.solid_tints);
-        for (was_translucent, vertices, sources) in [
-            (false, &solid, &solid_sources),
-            (true, &translucent, &translucent_sources),
+        // Looks are one per quad and written only while the mesher keeps them: they travel
+        // with their quad, and stay empty when there were none.
+        let solid_looks = std::mem::take(&mut self.solid_looks);
+        let translucent_looks = std::mem::take(&mut self.translucent_looks);
+        let keep_looks = !solid_looks.is_empty() || !translucent_looks.is_empty();
+        for (was_translucent, vertices, sources, looks) in [
+            (false, &solid, &solid_sources, &solid_looks),
+            (true, &translucent, &translucent_sources, &translucent_looks),
         ] {
             for (index, vertices) in vertices.as_chunks::<4>().0.iter().enumerate() {
                 let source = sources.get(index).copied().unwrap_or_default();
@@ -121,12 +126,19 @@ impl SectionMesh {
                         }
                     }
                 }
+                let look = looks.get(index).copied().unwrap_or_default();
                 if translucent {
                     self.translucent.extend(quad);
                     self.translucent_sources.push(source);
+                    if keep_looks {
+                        self.translucent_looks.push(look);
+                    }
                 } else {
                     self.solid.extend(quad);
                     self.solid_sources.push(source);
+                    if keep_looks {
+                        self.solid_looks.push(look);
+                    }
                     self.solid_tints.push(if was_translucent {
                         packed::UNKNOWN_TINT
                     } else {
@@ -254,6 +266,48 @@ mod tests {
         );
         assert_eq!(mesh.solid_sources, before.2);
         assert_eq!(mesh.translucent_sources, before.3);
+    }
+
+    /// Each quad's look moves with it when its pass changes, so the looks stay one per quad
+    /// and beside the right quad.
+    #[test]
+    fn looks_travel_with_their_quads_between_passes() {
+        let registry = registry();
+        let layers = BlockLayers::parse(&Properties::parse(
+            "layer.translucent=example:panel:half=upper\n\
+             layer.cutout=example:panel:half=lower\n\
+             layer.solid=water",
+            &Macros::standard(),
+        ));
+        let table = BlockLayerTable::resolve(&registry, &layers);
+        let a = TerrainSource::new(1, [1, 2, 3], 4, false);
+        let b = TerrainSource::new(2, [4, 5, 6], 7, false);
+        let c = TerrainSource::new(3, [7, 8, 9], 10, true);
+        let d = TerrainSource::new(4, [10, 11, 12], 13, false);
+        let look = |n: u32| QuadLook([n, n + 100]);
+        let mut mesh = SectionMesh::default();
+        mesh.solid.extend(quad(11 | OPAQUE_LAYER, 1.0));
+        mesh.solid.extend(quad(11 | OPAQUE_LAYER, 2.0));
+        mesh.solid.extend(quad(11 | OPAQUE_LAYER, 4.0));
+        mesh.solid_sources.extend([a, b, d]);
+        mesh.solid_tints.extend([1, 2, 3]);
+        mesh.solid_looks.extend([look(1), look(2), look(4)]);
+        mesh.translucent.extend(quad(11, 3.0));
+        mesh.translucent_sources.push(c);
+        mesh.translucent_looks.push(look(3));
+        mesh.route_layers(&table, |_| false);
+        // Quad `a` went translucent and `c` solid, as in the pass-routing test above.
+        assert_eq!(mesh.solid_sources, [b, d, c]);
+        assert_eq!(mesh.solid_looks, [look(2), look(4), look(3)]);
+        assert_eq!(mesh.translucent_sources, [a]);
+        assert_eq!(mesh.translucent_looks, [look(1)]);
+        // A mesh made without looks keeps none.
+        let mut plain = SectionMesh::default();
+        plain.solid.extend(quad(11 | OPAQUE_LAYER, 1.0));
+        plain.solid_sources.push(a);
+        plain.solid_tints.push(1);
+        plain.route_layers(&table, |_| false);
+        assert!(plain.solid_looks.is_empty() && plain.translucent_looks.is_empty());
     }
 
     #[test]
