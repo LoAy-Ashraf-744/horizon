@@ -43,6 +43,7 @@ pub(super) struct Group<M: MobSlot> {
     index: FxHashMap<u32, u32>,
     villager_slots: Vec<u32>,
     village: horizon_client::mobs::village_index::VillageIndex,
+    species_slots: horizon_client::mobs::species_slots::SpeciesSlots,
     solid_slots: Vec<u32>,
     pub pushes: PendingPushes,
     pub events: Vec<MobEvent>,
@@ -132,6 +133,7 @@ impl<M: MobSlot> Group<M> {
             }
         }
         let n = mobs.len();
+        let species_slots = horizon_client::mobs::species_slots::SpeciesSlots::new(&snapshot);
         Self {
             spare: start.guests.first().map(|g| g.1.clone()),
             mobs,
@@ -142,6 +144,7 @@ impl<M: MobSlot> Group<M> {
             index,
             villager_slots,
             village: Default::default(),
+            species_slots,
             solid_slots,
             pushes: PendingPushes::default(),
             events: start.events,
@@ -342,7 +345,8 @@ impl<M: MobSlot> Group<M> {
             others_grid: Some(&self.grid),
             others_index: Some(&self.index),
             others_villagers: Some(&self.villager_slots),
- village: Some(&self.village),
+            village: Some(&self.village),
+            species_slots: Some(&self.species_slots),
             others_solid: Some(&self.solid_slots),
             difficulty,
             nearest_player,
@@ -480,7 +484,12 @@ impl<M: MobSlot> Group<M> {
         let collisions = self.snapshot[i].collisions;
         let fresh = seen(m, shared.uuid);
         self.village.mark(i, &self.snapshot[i], &fresh);
+        let reclassified = self.snapshot[i].species != fresh.species;
         self.snapshot[i] = fresh;
+        if reclassified {
+            self.species_slots =
+                horizon_client::mobs::species_slots::SpeciesSlots::new(&self.snapshot);
+        }
         self.snapshot[i].collisions = collisions;
         self.snapshot[i].alive &= kept;
         // The server's collision cap (`mobs::max_collisions`): each mob `m` pushed in its turn

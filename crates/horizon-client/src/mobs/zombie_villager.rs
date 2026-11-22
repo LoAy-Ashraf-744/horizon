@@ -380,6 +380,7 @@ mod tests {
             passenger_objects: &[],
             others_villagers: None,
             village: None,
+            species_slots: None,
             others_solid: None,
             daylight: true,
             monsters_burn: false,
