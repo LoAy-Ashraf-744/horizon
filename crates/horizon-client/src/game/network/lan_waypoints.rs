@@ -92,6 +92,7 @@ impl Game<'_> {
                         transmit,
                     ),
                     receive_range: receive.map_or(PLAYER_RANGE, |v| v.max(0.0)),
+                    ranges_known: transmit.is_some() && receive.is_some(),
                     first_tick: g.ticks == 0,
                     view_distance: g.view_distance,
                     team: self.score.board.players_team(&g.name).map(|team| {
@@ -142,10 +143,15 @@ impl Game<'_> {
                 host.waypoints.remove(&level);
             }
         }
-        for (conn, packet) in out {
+        // Each receiver's packets are together: the guest is found once and its connection
+        // locked once for the run, the packets in the order they were made.
+        let mut rest = &out[..];
+        while let Some(&(conn, _)) = rest.first() {
+            let run = rest.iter().take_while(|(c, _)| *c == conn).count();
             if let Some(g) = host.hub.guest(conn) {
-                g.send(&packet);
+                g.send_waypoints(&rest[..run]);
             }
+            rest = &rest[run..];
         }
     }
 }
