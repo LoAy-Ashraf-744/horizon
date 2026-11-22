@@ -14,7 +14,6 @@ pub trait Hooks {
     #[hook(
         side = "client",
         contract = "listen",
-        host = "read",
         neoforge = "IItemExtension.shouldCauseReequipAnimation",
         target = "horizon_client::game::native_hooks::should_cause_reequip_animation_in_slot::Game<'_>::native_should_cause_reequip_animation_in_slot"
     )]
