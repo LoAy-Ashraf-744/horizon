@@ -1,7 +1,7 @@
 //! Shader-pack layer routing after vanilla face generation and before sorting/upload.
 //! Source-state metadata, not a sprite, identifies each quad's selection.
 
-use super::{MeshTables, OPAQUE_LAYER, QuadLook, SectionMesh, TerrainSource, packed};
+use super::{MeshTables, OPAQUE_LAYER, SectionMesh, TerrainSource, packed};
 use horizon_shaders::{BlockLayers, RenderLayer};
 use horizon_world::{
     fluid::{FluidKind, FluidState},
@@ -14,6 +14,16 @@ use horizon_world::{
 pub struct BlockLayerTable {
     states: Vec<[Option<RenderLayer>; 2]>,
     lava_layers: Vec<u16>,
+}
+
+/// The name of the block of a fluid's source form (`minecraft:water` for flowing water).
+fn source_name(kind: FluidKind) -> &'static str {
+    match kind {
+        FluidKind::Empty => FluidKind::Empty.name(),
+        FluidKind::FlowingWater | FluidKind::Water => FluidKind::Water.name(),
+        FluidKind::FlowingLava | FluidKind::Lava => FluidKind::Lava.name(),
+        FluidKind::Mod(fluid) | FluidKind::ModFlowing(fluid) => &fluid.get().id,
+    }
 }
 
 impl BlockLayerTable {
@@ -31,11 +41,11 @@ impl BlockLayerTable {
                 let fluid = FluidState::from_block(state).unwrap_or(FluidState::EMPTY);
                 let fluid_layer = if fluid.kind() == FluidKind::Empty {
                     None
-                } else if state.name == fluid.kind().source().name() {
+                } else if state.name == source_name(fluid.kind()) {
                     pick(state)
                 } else {
                     registry
-                        .default_state(fluid.kind().source().name())
+                        .default_state(source_name(fluid.kind()))
                         .and_then(|id| registry.state(id))
                         .and_then(pick)
                 };
@@ -152,7 +162,7 @@ impl SectionMesh {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mesher::TerrainVertex;
+    use crate::mesher::{QuadLook, TerrainVertex};
     use horizon_shaders::{Macros, Properties};
 
     fn table(states: Vec<[Option<RenderLayer>; 2]>) -> BlockLayerTable {
