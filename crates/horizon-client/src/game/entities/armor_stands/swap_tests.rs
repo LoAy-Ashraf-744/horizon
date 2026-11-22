@@ -2,6 +2,19 @@ use super::*;
 fn stack(item: &str, count: u32) -> ItemStack {
     ItemStack::new(item, count)
 }
+/// A head-locked stand held a helmet would refuse it in vanilla too:
+/// `getEquipmentSlotForItem` falls back to MAINHAND, so the stand holds it.
+#[test]
+fn a_disabled_equippable_slot_falls_back_to_the_hand() {
+    let mut a = ArmorStand::new(1, horizon_core::geometry::Vec3::ZERO, 0.0);
+    a.show_arms = true;
+    a.disabled_slots = 1 << 4; // head
+    assert_eq!(usable_equipment_slot(&a, 5), 0);
+    assert_eq!(usable_equipment_slot(&a, 4), 4);
+    assert_eq!(usable_equipment_slot(&a, 0), 0);
+    a.disabled_slots = 1 << 5; // off hand
+    assert_eq!(usable_equipment_slot(&a, 1), 0);
+}
 #[test]
 fn disabled_slots_lock_by_filter_flag() {
     let mut a = ArmorStand::new(1, horizon_core::geometry::Vec3::ZERO, 0.0);

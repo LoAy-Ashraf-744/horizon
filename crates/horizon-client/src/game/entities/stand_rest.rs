@@ -7,7 +7,8 @@ impl Game<'_> {
     /// The key of stand `i`'s physics and environment phases, or None when they could do anything
     /// a key does not cover: a mod listening to entity moves, a cart or an obstacle entity about, a dynamic
     /// block shape in the world, worn equipment (a compass reads the world), a rider, a box of
-    /// more than eight block sections.
+    /// more than eight block sections, a burning stand (what `environment_tick_inner` asks the
+    /// damage hooks and the saved invulnerability state about is not in the key).
     pub(super) fn stand_rest_key(
         &self,
         i: usize,
@@ -20,6 +21,7 @@ impl Game<'_> {
             || !self.world.moving_pistons.is_empty()
             || !self.world.shulkers.is_empty()
             || a.vehicle.is_some()
+            || a.fire_ticks > 0
             || (0..horizon_items::equipment::SLOT_NAMES.len()).any(|s| a.equipment[s].is_some())
         {
             return None;
@@ -79,6 +81,8 @@ impl Game<'_> {
         for s in &mut self.armor_stands {
             s.rest = None;
         }
+        // The levels not in place hold stands too; their tags change with the reload as well.
+        self.levels.forget_stand_rests();
         // The kept network entries read reloaded data too (names, equipment attributes, defaults).
         self.stand_states.clear();
     }
@@ -178,6 +182,14 @@ mod stand_rest_tests {
             assert!(g.run_command("setblock 8 200 8 lava"));
         }
         run(&mut a, &mut b, 25, "lava on a stand");
+        // A burning stand asks the damage hooks every tick: it does not rest.
+        assert!(
+            a.armor_stands
+                .iter()
+                .filter(|s| s.fire_ticks > 0)
+                .all(|s| s.rest.is_none()),
+            "a burning stand rests"
+        );
         for g in [&mut a, &mut b] {
             assert!(g.run_command("setblock 8 200 8 air"));
         }

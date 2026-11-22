@@ -39,6 +39,7 @@ fn matches_the_executed_java_private_method() {
                 fall_distance: 0.0,
                 rotation: [0.0, 0.0],
                 join: Default::default(),
+                section_order: 0,
                 no_gravity: false,
                 id: 1,
                 position: Vec3::ZERO,
