@@ -115,7 +115,7 @@ impl Game<'_> {
         if let Err(error) = self.join_server(address, name, None, cookies, lan, realm) {
             log::warn!("Horizon: could not join server: {error}");
             // A failed transfer leaves no packs of the connection it replaced behind.
-            self.server_packs_disconnect_for(false);
+            self.server_packs_disconnect();
             let skip = self.settings.file.bool("skipMultiplayerWarning");
             match &mut self.title {
                 Some(title) => {
@@ -792,7 +792,11 @@ impl Game<'_> {
         }
         super::super::lan::sync::forget_sync_data();
         self.gui.atlas.clear_object_skins();
-        self.server_packs_disconnect_for(transferring);
+        if transferring {
+            self.server_packs_disconnect_for(true);
+        } else {
+            self.server_packs_disconnect();
+        }
         self.code_of_conduct = None;
         self.reset_tutorial();
         self.close_dialogs();

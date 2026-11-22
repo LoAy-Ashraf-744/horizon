@@ -774,7 +774,7 @@ mod tests {
         assert!(!state.end_connection(true));
 
         // Destination server join fails (e.g. connection timeout or refused):
-        // connect_server_with_options_body calls server_packs_disconnect_for(false).
+        // connect_server_with_options_body calls server_packs_disconnect().
         // Preserved packs must be cleared and an unload reload scheduled.
         assert!(state.end_connection(false));
         assert_eq!(state.packs.tick().reload, Some(vec![]));
