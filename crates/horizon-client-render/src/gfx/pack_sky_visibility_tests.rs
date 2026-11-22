@@ -32,7 +32,13 @@ fn pack_sun_and_moon_properties_control_independent_pixels() {
         celestial: Some(super::super::pack_sky::celestial_inputs()),
         ..Default::default()
     };
-    let hud = crate::hud::HudBatch::new([8, 1]);
+    let hud = crate::hud::HudBatch::new(
+        [8, 1],
+        crate::hud::GuiScale {
+            requested: 0,
+            unicode: false,
+        },
+    );
     let vertices: Vec<_> = [(-1.0, 0.0, 0xff0000ff), (0.0, 1.0, 0xff00ff00)]
         .into_iter()
         .flat_map(|(left, right, color)| {
@@ -231,7 +237,13 @@ void main() {
         sky: Some(super::super::pack_sky::inputs()),
         ..Default::default()
     };
-    let hud = crate::hud::HudBatch::new([8, 1]);
+    let hud = crate::hud::HudBatch::new(
+        [8, 1],
+        crate::hud::GuiScale {
+            requested: 0,
+            unicode: false,
+        },
+    );
     let mut frame = frame(&hud, &[]);
     frame.sky.sunrise_color = [1.0; 4];
     frame.dark_disc = true;
@@ -340,7 +352,7 @@ fn frame<'a>(
         chunk_fade: Default::default(),
         post_effects: crate::post_chain::Request {
             effects: &[],
-            root: std::path::Path::new("."),
+            root: crate::post_chain::Request::none().root,
             menu_blur_radius: 0.0,
             globals: Default::default(),
             extras: None,
@@ -350,7 +362,13 @@ fn frame<'a>(
 
 #[test]
 fn pack_visibility_selects_geometry_without_changing_order_or_unrelated_parts() {
-    let hud = crate::hud::HudBatch::new([8, 1]);
+    let hud = crate::hud::HudBatch::new(
+        [8, 1],
+        crate::hud::GuiScale {
+            requested: 0,
+            unicode: false,
+        },
+    );
     let mut frame = frame(&hud, &[]);
     frame.sky.sunrise_color[3] = 1.0;
     frame.stars = Some((Mat4::IDENTITY, 1.0));
@@ -426,7 +444,7 @@ fn pack_visibility_selects_geometry_without_changing_order_or_unrelated_parts() 
 
 #[test]
 fn a_pack_switch_and_a_pack_sky_each_hide_their_own_body() {
-    use super::pack_visibility::visible_bodies;
+    use super::super::pack_visibility::visible_bodies;
     use crate::mesher::{LOW, VERY_BRIGHT, Vertex};
     let quad = |tier: u8| {
         let mut v: Vertex = bytemuck::Zeroable::zeroed();
@@ -440,9 +458,8 @@ fn a_pack_switch_and_a_pack_sky_each_hide_their_own_body() {
         moon,
         ..Default::default()
     };
-    let drawn = |own: (bool, bool), visibility| {
-        visible_bodies(&sun_and_moon, false, own, visibility)
-    };
+    let drawn =
+        |own: (bool, bool), visibility| visible_bodies(&sun_and_moon, false, own, visibility);
     // Nothing hides anything.
     assert_eq!(drawn((false, false), switches(true, true)), 0..12);
     // The switch hides one body, the pack's own sky the other.
@@ -459,7 +476,10 @@ fn a_pack_switch_and_a_pack_sky_each_hide_their_own_body() {
         visible_bodies(&flashes, true, (true, true), switches(false, false)),
         0..12
     );
-    assert_eq!(visible_bodies(&[], false, (false, false), switches(true, true)), 0..0);
+    assert_eq!(
+        visible_bodies(&[], false, (false, false), switches(true, true)),
+        0..0
+    );
 }
 
 #[test]
