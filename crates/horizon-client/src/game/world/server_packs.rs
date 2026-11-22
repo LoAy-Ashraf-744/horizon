@@ -260,7 +260,12 @@ impl Game<'_> {
     /// `ConnectScreen`: the server's setting decides what its packs do
     /// (`configureForServerControl`); single player's own server takes them
     /// all, quietly (`configureForLocalWorld`).
-    pub(super) fn server_packs_connect(
+    pub(super) fn server_packs_connect(&mut self, address: Option<&str>, user: (String, u128)) {
+        self.server_packs_connect_for(address, user, false);
+    }
+    /// `server_packs_connect` for a connection that carries a transfer's cookies: the
+    /// packs of the connection it replaces stay mounted.
+    pub(super) fn server_packs_connect_for(
         &mut self,
         address: Option<&str>,
         user: (String, u128),
@@ -290,7 +295,11 @@ impl Game<'_> {
         }
     }
     /// `Minecraft.clearDownloadedResourcePacks`: every server pack goes at once.
-    pub(super) fn server_packs_disconnect(&mut self, transferring: bool) {
+    pub(super) fn server_packs_disconnect(&mut self) {
+        self.server_packs_disconnect_for(false);
+    }
+    /// `server_packs_disconnect`, or for a protocol transfer (`transferring`) the packs stay.
+    pub(super) fn server_packs_disconnect_for(&mut self, transferring: bool) {
         if self.server_packs.end_connection(transferring) {
             self.tick_server_packs();
         }
@@ -765,7 +774,7 @@ mod tests {
         assert!(!state.end_connection(true));
 
         // Destination server join fails (e.g. connection timeout or refused):
-        // join_server calls server_packs_disconnect(false).
+        // join_server calls server_packs_disconnect_for(false).
         // Preserved packs must be cleared and an unload reload scheduled.
         assert!(state.end_connection(false));
         assert_eq!(state.packs.tick().reload, Some(vec![]));
