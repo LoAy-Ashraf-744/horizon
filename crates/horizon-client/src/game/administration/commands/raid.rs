@@ -230,9 +230,9 @@ mod tests {
     /// plain white banner. Expected values are vanilla's
     /// `Raid.getBannerComponentPatch` (26.3).
     #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_killed_captain_drops_the_ominous_banner_it_wears() {
-        use horizon_world::nbt::Tag;
+        use horizon_core::nbt::Tag;
         let ominous_patch = || {
             let layer = |pattern: &str, color: &str| {
                 Tag::compound([
@@ -271,8 +271,7 @@ mod tests {
                 ("minecraft:rarity", Tag::String("uncommon".into())),
             ]
         };
-        let mut wrong = Vec::new();
-        let mut check = |what: &str, stack: &horizon_client::items::ItemStack| {
+        let check = |wrong: &mut Vec<String>, what: &str, stack: &horizon_client::items::ItemStack| {
             if &*stack.item != "minecraft:white_banner" || stack.count != 1 {
                 wrong.push(format!("{what}: {} x{}", stack.item, stack.count));
             }
@@ -291,33 +290,35 @@ mod tests {
             }
         };
 
-        let mut game = server_game();
-        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
-        game.ui.registries.permission = 4;
-        run_dev(&mut game, "raid spawnleader");
-        let captain = game
-            .mobs
-            .iter()
-            .find(|m| &*m.kind.id == "minecraft:pillager")
-            .expect("the captain");
-        // PatrollingMonster.finalizeSpawn: setItemSlot(HEAD, the banner), as
-        // getItemBySlot reads it and as SetEquipment sends it.
-        let head = horizon_items::equipment::HEAD;
-        let worn = captain.extra.slot_stack(head).cloned().expect("a head stack");
-        check("worn", &worn);
-        let read = horizon_client::mobs::finalize::item_stack(captain, head).expect("a head stack");
-        check("read", &read);
-        let before = game.dropped.len();
-        assert!(game.run_command("kill @e[type=minecraft:pillager]"));
-        let banners: Vec<_> = game
-            .dropped
-            .iter()
-            .skip(before)
-            .filter(|e| &*e.stack.item == "minecraft:white_banner")
-            .map(|e| e.stack.clone())
-            .collect();
-        assert_eq!(banners.len(), 1, "the head drop (chance 2.0)");
-        check("dropped", &banners[0]);
-        assert!(wrong.is_empty(), "{wrong:#?}");
+        with_game(|game| {
+            let mut wrong = Vec::new();
+            game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
+            game.ui.registries.permission = 4;
+            run_dev(game, "raid spawnleader");
+            let captain = game
+                .mobs
+                .iter()
+                .find(|m| &*m.kind.id == "minecraft:pillager")
+                .expect("the captain");
+            // PatrollingMonster.finalizeSpawn: setItemSlot(HEAD, the banner), as
+            // getItemBySlot reads it and as SetEquipment sends it.
+            let head = horizon_items::equipment::HEAD;
+            let worn = captain.extra.slot_stack(head).cloned().expect("a head stack");
+            check(&mut wrong, "worn", &worn);
+            let read = horizon_client::mobs::finalize::item_stack(captain, head).expect("a head stack");
+            check(&mut wrong, "read", &read);
+            let before = game.dropped.len();
+            assert!(game.run_command("kill @e[type=minecraft:pillager]"));
+            let banners: Vec<_> = game
+                .dropped
+                .iter()
+                .skip(before)
+                .filter(|e| &*e.stack.item == "minecraft:white_banner")
+                .map(|e| e.stack.clone())
+                .collect();
+            assert_eq!(banners.len(), 1, "the head drop (chance 2.0)");
+            check(&mut wrong, "dropped", &banners[0]);
+            assert!(wrong.is_empty(), "{wrong:#?}");
+        });
     }
 }
