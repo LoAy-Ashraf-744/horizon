@@ -78,7 +78,7 @@ struct VisIdOut {
 ) -> VisIdOut {
     var out: VisIdOut;
     let s = section_corner(vertex);
-    let origin = slot_origins[block_slots[s.slot >> 8u]];
+    let origin = slot_origins[block_slots[s.slot >> 6u]];
     if !opaque_quad(corner_layer(s.c), origin.w) {
         out.clip = vec4(2.0, 2.0, 2.0, 1.0);
         return out;
@@ -108,7 +108,7 @@ struct VisCutoutOut {
 ) -> VisCutoutOut {
     var out: VisCutoutOut;
     let s = section_corner(vertex);
-    let origin = slot_origins[block_slots[s.slot >> 8u]];
+    let origin = slot_origins[block_slots[s.slot >> 6u]];
     let layer = corner_layer(s.c);
     if opaque_quad(layer, origin.w) {
         out.clip = vec4(2.0, 2.0, 2.0, 1.0);
@@ -310,9 +310,9 @@ fn vis_corner(position: vec3<u32>, rest: vec3<u32>, origin: vec4<f32>) -> Terrai
             first = index + lo.x;
         }
     }
-    // The quad's block (256 slots: 64 quads of vertices, 256 records) names its section, as
+    // The quad's block (64 slots: 16 quads of vertices, 64 records) names its section, as
     // for `vs_section_flat`.
-    let block = select(index >> 6u, index >> 8u, (id & 0x40000000u) != 0u);
+    let block = select(index >> 4u, index >> 6u, (id & 0x40000000u) != 0u);
     let origin = slot_origins[block_slots[page * VIS_BLOCKS_PER_PAGE + block]];
     var p0: vec3<u32>;
     var r0: vec3<u32>;
@@ -406,19 +406,6 @@ fn vis_corner(position: vec3<u32>, rest: vec3<u32>, origin: vec4<f32>) -> Terrai
     t.visibility += b.z * t2.visibility;
     let du = (uv_x - t.uv) * toward.x;
     let dv = (uv_y - t.uv) * toward.y;
-    // HDR output alone reads the light levels and the face's normal (as in `fs_opaque`):
-    // `terrain_vertex` gives them as the block light over 16 and the sky light over 16, and the
-    // section-relative position.
-    if globals.hdr_light.z != 0.0 {
-        let local = array(bitcast<vec3<f32>>(p0), bitcast<vec3<f32>>(select(p1, p2, second)),
-            bitcast<vec3<f32>>(select(p2, p3, second)));
-        // `t.scene` is still the first corner's.
-        t.scene = b.x * t.scene + b.y * t1.scene + b.z * t2.scene;
-        t.local = b.x * local[0] + b.y * local[1] + b.z * local[2];
-        let dlx = (bx.x * local[0] + bx.y * local[1] + bx.z * local[2] - t.local) * toward.x;
-        let dly = (by.x * local[0] + by.y * local[1] + by.z * local[2] - t.local) * toward.y;
-        hdr_normal = normalize(cross(dly, dlx));
-    }
     // `fs_opaque` and `solid_color` past their discards, which pass 1 already made.
     let texel = vis_sprite(t.uv, t.layer & 0x7fffu, du, dv);
     var color = texel * t.color;
