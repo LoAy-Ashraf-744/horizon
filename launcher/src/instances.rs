@@ -130,6 +130,30 @@ pub fn adopt_icon(home: &Path, url: &str) {
     }
 }
 
+// A malformed preference must not invalidate unrelated instance metadata.
+fn saved_profile<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<crate::native_mods::Profile>, D::Error> {
+    Ok(serde_json::from_value(serde_json::Value::deserialize(deserializer)?).ok())
+}
+
+/// Which builds an instance's "latest" follows. Missing in a saved instance: Nightly, so nobody
+/// is moved to an older build.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Channel {
+    Stable,
+    #[default]
+    Nightly,
+}
+
+// An unknown channel must not invalidate unrelated instance metadata.
+fn saved_channel<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Channel>, D::Error> {
+    Ok(serde_json::from_value(serde_json::Value::deserialize(deserializer)?).ok())
+}
+
 /// The player's choices about one instance.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Meta {
@@ -143,6 +167,20 @@ pub struct Meta {
     /// launcher's own version, which follows updates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// The builds "latest" means for it; missing is [`Channel::Nightly`].
+    #[serde(
+        default,
+        deserialize_with = "saved_channel",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub channel: Option<Channel>,
+    /// This instance's saved native build choice; missing or unknown starts at Optimized.
+    #[serde(
+        default,
+        deserialize_with = "saved_profile",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub native_profile: Option<crate::native_mods::Profile>,
     /// Seconds played in it, every run started by the launcher (the window or `play`) added up.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub played_secs: u64,
@@ -245,6 +283,10 @@ pub struct Instance {
     pub group: Option<String>,
     /// Its pinned Horizon version, if any (`Meta::version`).
     pub version: Option<String>,
+    /// Which builds it follows when it keeps no version.
+    pub channel: Channel,
+    /// Its saved native build choice, or Optimized before the player chooses one.
+    pub native_profile: crate::native_mods::Profile,
     pub played: Duration,
     pub last_played: Option<SystemTime>,
     /// What runs around the game (`launch::wrap`).
@@ -267,8 +309,22 @@ impl Instance {
         }
     }
 
+    /// The Horizon version it pins when that version isn't in `installed` (deleted while the
+    /// window was open, or not installed yet). Such an instance never falls back to another
+    /// version: opening its worlds in one could upgrade them.
+    pub fn missing_pin(&self, installed: &[String]) -> Option<&str> {
+        let pin = self.version.as_deref().filter(|_| self.java.is_none())?;
+        (!installed.iter().any(|t| t == pin)).then_some(pin)
+    }
+
+    /// It takes Home's Horizon update offers: it pins no version and plays Horizon, not Java (#18394).
+    pub fn follows_horizon(&self) -> bool {
+        self.version.is_none() && self.java.is_none()
+    }
+
     /// The installed version this instance plays: its pinned one, else `requested` (the
-    /// command line's `--version`) or the launcher's (`backend::resolve_version`).
+    /// command line's `--version`), else on Stable its channel's ([`crate::nightly::stable_latest`],
+    /// as Home's), else the launcher's (`backend::resolve_version`).
     pub fn resolve_version(&self, requested: Option<&str>) -> Result<String, String> {
         self.horizon()?;
         match (requested, &self.version) {
@@ -279,6 +335,11 @@ impl Instance {
                     self.name, self.name
                 )
             }),
+            (None, None) if self.channel == Channel::Stable => {
+                let selected = backend::Settings::load().selected;
+                crate::nightly::stable_latest(&backend::installed(), selected.as_deref())
+                    .map_or_else(|| backend::resolve_version(None), Ok)
+            }
             _ => backend::resolve_version(requested),
         }
     }
@@ -324,11 +385,11 @@ fn list_in(game_home: &Path, data: &Path) -> Vec<Instance> {
         let dir = game_home.join(OWN).join(&slug);
         found.push((slug.clone(), slug, Kind::Own, dir.clone(), dir));
     }
-    for p in modpacks::list_in(&game_home.join("ports")) {
+    for p in modpacks::listed_in(&game_home.join("ports")) {
         let home = modpacks::profile_home(&p.work);
         found.push((
             format!("port:{}", p.slug),
-            p.title().into(),
+            p.title,
             Kind::Port,
             p.work,
             home,
@@ -347,6 +408,10 @@ fn list_in(game_home: &Path, data: &Path) -> Vec<Instance> {
                 icon: meta.icon,
                 group: meta.group,
                 version: meta.version,
+                channel: meta.channel.unwrap_or_default(),
+                native_profile: meta
+                    .native_profile
+                    .unwrap_or(crate::native_mods::Profile::Optimized),
                 played: Duration::from_secs(meta.played_secs),
                 last_played: meta
                     .last_played
@@ -404,6 +469,7 @@ pub fn delete_with_selection(query: &str) -> Result<(Instance, Result<(), String
     } else {
         Ok(())
     };
+    crate::storage::eviction::request_cleanup();
     Ok((gone, saved))
 }
 
@@ -446,6 +512,35 @@ pub fn select(query: &str) -> Result<Instance, String> {
     Ok(instance)
 }
 
+/// The game's cache folder in each instance; the game rebuilds it on start.
+const GAME_CACHE: &str = ".horizon-cache";
+
+/// Where the game makes its cache under `game_home`: directly in each instance's home, never
+/// deeper, since a world may carry the same name. Every instance, port and pack folder counts,
+/// whether or not its record reads. Links are never followed: the copy refuses them afterwards.
+pub(crate) fn game_caches(game_home: &Path) -> Vec<PathBuf> {
+    let plain_dir = |dir: &Path| {
+        fs::symlink_metadata(dir).is_ok_and(|meta| {
+            meta.is_dir() && crate::data_location::reject_link(dir, &meta).is_ok()
+        })
+    };
+    let children = |dir: PathBuf| {
+        (plain_dir(game_home) && plain_dir(&dir))
+            .then(|| fs::read_dir(dir).ok())
+            .flatten()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+    };
+    std::iter::once(game_home.to_path_buf())
+        .chain(children(game_home.join(OWN)))
+        .chain(children(game_home.join("ports")).map(|w| modpacks::profile_home(&w)))
+        .chain(children(game_home.join("horizon-packs")).map(|w| registry_pack::home(&w)))
+        .map(|home| home.join(GAME_CACHE))
+        .collect()
+}
+
 /// What a copy of a game folder leaves out: other instances and packs, logs and crash reports,
 /// caches, data collection's state, and sign-in sessions (a session never leaves its folder).
 const NOT_COPIED: &[&str] = &[
@@ -455,9 +550,8 @@ const NOT_COPIED: &[&str] = &[
     "logs",
     "crash-reports",
     "sessions",
-    "telemetry",
     "mod-browser",
-    ".horizon-cache",
+    GAME_CACHE,
     // Far terrain's copies of what servers sent, rebuilt as the instance plays.
     "server-terrain",
 ];
@@ -555,6 +649,7 @@ fn create_in(
         let _ = fs::remove_dir_all(&dir);
         return Err(format!("Could not make {}: {e}", dir.display()));
     }
+    crate::run_leases::publish(&dir).map_err(crate::native_mods::cache_error)?;
     let mut store = Store::load(data);
     let meta = store.instances.entry(slug.clone()).or_default();
     meta.name = (name != slug).then(|| name.to_string());
