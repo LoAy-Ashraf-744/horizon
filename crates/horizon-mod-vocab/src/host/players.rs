@@ -894,10 +894,12 @@ pub trait PlayersBackendMut {
     /// Opens `dialog` on the player's screen: a dialog as a data pack's file
     /// writes it (`type`, `title`, `body`, `inputs`, `buttons`), sent inline,
     /// as `/dialog show` does for one written out
-    /// (`ServerPlayer.openDialog`). The dialog is not validated: a client
-    /// that cannot read it leaves the game, so build it with care. The
-    /// player's own hooks may call it, the packet going after the hook.
-    /// False for a player not here and on a client.
+    /// (`ServerPlayer.openDialog`). The dialog is checked as the client reads it
+    /// (`Dialog.DIRECT_CODEC`) and as the wire carries it, since a client that
+    /// cannot read it leaves the game: one it would refuse, or whose tag is
+    /// too deep to send, sends nothing. The player's own hooks may call it,
+    /// the packet going after the hook. False for a player not here, a fake
+    /// player, on a client and for such a dialog.
     #[access(WorldOnly)]
     fn player_show_dialog(&mut self, player: PlayerRef, dialog: &Compound) -> bool;
     /// Side: server.
