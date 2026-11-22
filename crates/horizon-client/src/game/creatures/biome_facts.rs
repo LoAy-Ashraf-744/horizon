@@ -1,21 +1,6 @@
 //! `Game::biome_facts` over what it reads, so a helper thread can ask too.
 use horizon_client::mobs::{farm::Climate, spawning::BiomeFacts};
 
-/// The facts of the biome at a position, for `finalizeSpawn` and the variant rules.
-pub(in crate::game) fn biome_facts_in(
-    world: &horizon_client::world::World,
-    biomes: &horizon_client::biome::Biomes,
-    tags: &horizon_client::mobs::MobData,
-    x: i32,
-    y: i32,
-    z: i32,
-) -> BiomeFacts {
-    let Some(chunk) = world.chunks.get(&(x >> 4, z >> 4)) else {
-        return BiomeFacts::default();
-    };
-    biome_facts_of(world, biomes, tags, chunk.biome(x, y, z))
-}
-
 /// The facts of the stored biome `id`, for `finalizeSpawn` and the variant rules.
 pub(in crate::game) fn biome_facts_of(
     world: &horizon_client::world::World,
