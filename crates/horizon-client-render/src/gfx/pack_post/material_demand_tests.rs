@@ -2,8 +2,9 @@
 use super::*;
 
 #[test]
-#[ignore = "requires an offscreen wgpu adapter; absence is a failure"]
+#[ignore = "requires a Vulkan/Metal/DX12 adapter"]
 fn material_demand_follows_usable_bindings_and_custom_overrides() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let instance = crate::gfx::test_gpu::instance();
     let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
         .expect("an offscreen adapter is required");
