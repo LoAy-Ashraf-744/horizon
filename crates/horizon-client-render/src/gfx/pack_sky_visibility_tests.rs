@@ -4,8 +4,9 @@ use glam::Mat4;
 use wgpu::TextureFormat as T;
 
 #[test]
-#[ignore = "requires an offscreen GPU adapter; setup failure is a failure"]
+#[ignore = "requires a Vulkan/Metal/DX12 adapter"]
 fn pack_sun_and_moon_properties_control_independent_pixels() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let instance = crate::gfx::test_gpu::instance();
     let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
         .expect("offscreen adapter");
@@ -192,8 +193,9 @@ fn render_pack_sky(
 }
 
 #[test]
-#[ignore = "requires an offscreen GPU adapter; setup failure is a failure"]
+#[ignore = "requires a Vulkan/Metal/DX12 adapter"]
 fn pack_sky_property_hides_disc_horizon_sunset_and_void_pixels() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let instance = crate::gfx::test_gpu::instance();
     let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
         .expect("offscreen adapter");
@@ -480,8 +482,9 @@ fn a_pack_switch_and_a_pack_sky_each_hide_their_own_body() {
 }
 
 #[test]
-#[ignore = "requires an offscreen GPU adapter; setup failure is a failure"]
+#[ignore = "requires a Vulkan/Metal/DX12 adapter"]
 fn pack_sky_property_gates_native_fallback_submissions() {
+    let _gpu = crate::gfx::test_gpu::lock();
     use wgpu::util::DeviceExt;
     let instance = crate::gfx::test_gpu::instance();
     let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
