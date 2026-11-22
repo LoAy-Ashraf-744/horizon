@@ -28,8 +28,11 @@ impl Game<'_> {
     }
 
     /// `new ItemEntity(..)`: the item at the end of `dropped`, not yet joined
-    /// (`join_item_entity`). Returns its entity id and motion.
-    #[cfg(test)]
+    /// (`join_item_entity`). Returns its motion. Kept as it was, a path a native
+    /// mod can declare; `try_push_item_entity` is the one that refuses an empty
+    /// or air stack and returns the entity id. An empty or air stack adds
+    /// nothing here and gives back no motion.
+    #[allow(dead_code)]
     pub(in crate::game) fn push_item_entity(
         &mut self,
         stack: ItemStack,
@@ -37,8 +40,9 @@ impl Game<'_> {
         velocity: Option<[f64; 3]>,
         pickup_delay: u32,
         random: Option<spill::ItemRandom>,
-    ) -> Option<(u32, [f64; 3])> {
+    ) -> [f64; 3] {
         self.try_push_item_entity(stack, position, velocity, pickup_delay, random)
+            .map_or([0.0; 3], |(_, motion)| motion)
     }
 
     /// `ServerLevel.addFreshEntity` of the item `id` that `push_item_entity`
