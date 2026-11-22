@@ -1626,13 +1626,20 @@ mod tests {
         b.receive_range = 0.0;
         let out = w.tick(&[a.clone(), b.clone()], &[], true);
         assert!(to(&out, 10).is_empty());
-        assert!(to(&out, 20).is_empty());
+        // It receives nothing now: it only drops A's marker.
+        assert_eq!(
+            to(&out, 20),
+            [(waypoint_operation::UNTRACK, WaypointTarget::Empty)]
+        );
         // Moving on, A still hears of it.
         b.position[0] += 1.0;
         let out = w.tick(&[a, b], &[], true);
         assert_eq!(
             to(&out, 10),
-            [(waypoint_operation::TRACK, WaypointTarget::Block([5, 64, 0]))]
+            [(
+                waypoint_operation::UPDATE,
+                WaypointTarget::Block([5, 64, 0])
+            )]
         );
     }
 
