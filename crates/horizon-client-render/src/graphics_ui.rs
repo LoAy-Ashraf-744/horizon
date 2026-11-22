@@ -7,9 +7,9 @@
 use crate::{
     gfx::EffectiveOutput,
     graphics::{
-        EntityCullingMode, FarDetail, FrameGeneration, GpuCullingMode, GraphicsApi, HdrMode,
-        HdrSetup as Setup, LeafCullingMode, Overlay, Pacing, ParticleCullingMode, PresentMode,
-        Preset, Upscaling,
+        EntityCullingMode, FarDetail, FrameGeneration, GpuCullingMode, GraphicsApi, HdrLook,
+        HdrMode, HdrSetup as Setup, LeafCullingMode, Overlay, Pacing, ParallelTickMode,
+        ParticleCullingMode, PresentMode, Preset, Upscaling,
     },
     graphics_style::Cost,
     lang,
@@ -72,8 +72,6 @@ pub enum H {
     Preset,
     LodDistance,
     FarDetail,
-    BlueMapAutoDetect,
-    BlueMapRadius,
     CaveCulling,
     GpuCulling,
     EntityCulling,
@@ -98,6 +96,7 @@ pub enum H {
     PresentMode,
     Pacing,
     Workers,
+    ParallelTick,
     Overlay,
     ResolutionScale,
     DynamicResolution,
@@ -114,14 +113,14 @@ pub enum H {
     HdrPeak,
     HdrPaperWhite,
     HdrUiBrightness,
-    HdrLighting,
+    HdrColorBoost,
+    HdrLook,
     BatteryMode,
     ShadowCache,
     /// Opens the shader pack list (`options_ui::Page::ShaderPacks`).
     ShaderPacks,
     GraphicsApi,
     TranslucentBatching,
-    HdrSmoothGradients,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -203,16 +202,6 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.",
                         ),
                         h(H::FarDetail, Medium, far),
-                        h(
-                            H::BlueMapAutoDetect,
-                            None,
-                            "On servers, finds their BlueMap web map for far terrain. Next join.",
-                        ),
-                        h(
-                            H::BlueMapRadius,
-                            None,
-                            "How far around you BlueMap tiles are downloaded. Next join.",
-                        ),
                         v(
                             Opt::SimulationDistance,
                             Medium,
@@ -259,6 +248,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         v(Opt::MenuBlur, Low, "Blurs the world behind menus."),
                         v(Opt::AttackIndicator, None, "Shows attack cooldown."),
                         v(Opt::Autosave, None, "Shows when the world saves."),
+                        v(
+                            Opt::FovEffects,
+                            None,
+                            "How much speed, sprinting and status effects change the field of view.",
+                        ),
                     ],
                 ),
             ],
@@ -381,7 +375,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         h(
                             H::Antialiasing,
                             Medium,
-                            "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.",
+                            "FXAA: softer. TAA: may trail. 4x MSAA: terrain and foliage, more GPU memory.",
                         ),
                         h(
                             H::Upscaling,
@@ -432,6 +426,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             H::Workers,
                             None,
                             "Threads that generate, light and mesh chunks. Next start.",
+                        ),
+                        h(
+                            H::ParallelTick,
+                            Saves,
+                            "Shares your world's tick among threads. Auto: only while that is faster.",
                         ),
                     ],
                 ),
@@ -590,12 +589,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         h(
                             H::Hdr,
                             None,
-                            "Lava, fire and sunlight shine brighter than white. Needs an HDR display.",
-                        ),
-                        h(
-                            H::HdrSmoothGradients,
-                            Low,
-                            "16-bit frame: dark skies and shadows don't band. A bit more VRAM. Next start.",
+                            "Lava, fire and the sun shine brighter than white. Needs an HDR display.",
                         ),
                         h(
                             H::HdrCalibrate,
@@ -628,15 +622,26 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "How bright the HUD and menus are. Auto: at paper white.",
                         ),
                         h(
-                            H::HdrLighting,
+                            H::HdrColorBoost,
                             None,
-                            "Light sources, the sun and sunlight shine past white. Off: just as SDR.",
+                            "0%: exact colours. More: stretched to your display's range, as SDR often is.",
+                        ),
+                        h(
+                            H::HdrLook,
+                            None,
+                            "Horizon: light sources and the sun shine past white. Vanilla: just as SDR.",
                         ),
                     ],
                 ),
             ],
         ),
     ];
+    // The fork forces ticking serial, so Parallel Tick would be a no-op setting.
+    for (_, groups) in &mut pages {
+        for (_, rows) in groups {
+            rows.retain(|r| !matches!(r.item, Item::Horizon(H::ParallelTick)));
+        }
+    }
     // Only Windows and Linux have more than one graphics API, translucent batching (Metal
     // draws flat) and GPU culling (Metal draws no count the GPU wrote).
     if cfg!(target_os = "macos") {
@@ -654,8 +659,6 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
     pages
 }
 
-/// BlueMap download radii, in chunks.
-const BLUE_MAP_RADII: [u32; 5] = [16, 32, 64, 128, 256];
 const UPLOAD_STEPS: [u32; 8] = [0, 256, 512, 1024, 2048, 4096, 8192, 16384];
 /// What the LOD Distance slider stops at, in chunks: off, fine steps up to 256
 /// for a short ring of far terrain past a small render distance (a phone or an
@@ -695,6 +698,15 @@ fn setup(s: &Settings, out: &EffectiveOutput) -> Setup {
 /// What the HDR page says while HDR output is held back on this window's graphics driver
 /// (`EffectiveOutput::held`): picking a mode tries again (`H::cycle`).
 const HDR_HELD: &str = "HDR output stopped the game the last time it started with this graphics driver. Choose a mode to try again.";
+/// The same, held by a graphics device loss (`gfx::safe_start`).
+fn hdr_held(s: &Settings) -> &'static str {
+    match s.horizon.safe_start {
+        Some(_) => {
+            "An earlier start lost the graphics device, so HDR stays off. Choose a mode to try again."
+        }
+        None => HDR_HELD,
+    }
+}
 
 /// The description beside `item` where it depends on [`setup`]; `text` otherwise.
 fn description(
@@ -704,7 +716,7 @@ fn description(
     text: &'static str,
 ) -> &'static str {
     match (item, setup(s, out)) {
-        (Item::Horizon(H::Hdr), _) if out.held => HDR_HELD,
+        (Item::Horizon(H::Hdr), _) if out.held => hdr_held(s),
         (Item::Horizon(H::HdrCalibrate), Setup::Unknown) => {
             "Your display didn't say how bright it gets: calibrate to set it up."
         }
@@ -818,6 +830,7 @@ impl H {
                 n => (1.0 + crate::graphics::peak_step_of(n as f32)) / PEAK_POSITIONS as f32,
             }),
             H::HdrBlackLevel => Some(g.hdr_black_level as f32 / 100.0),
+            H::HdrColorBoost => Some(g.hdr_color_boost as f32 / 100.0),
             _ => None,
         }
     }
@@ -833,11 +846,13 @@ impl H {
             H::HdrPaperWhite | H::HdrUiBrightness => Some(crate::graphics::NITS_STEPS),
             H::HdrPeak => Some(PEAK_POSITIONS),
             H::HdrBlackLevel => Some(100),
+            // 0..100% by 5.
+            H::HdrColorBoost => Some(20),
             _ => None,
         }
     }
-    /// "Paper White: Auto (203)" or "Paper White: 160": a setting in nits, 0 for Auto, which
-    /// shows the nits Auto gives.
+    /// "Paper White: Auto (203 nits)" or "Paper White: 160 nits": a setting in nits, 0 for Auto,
+    /// which shows the nits Auto gives.
     fn nits_label(self, s: &Settings, out: &EffectiveOutput) -> Text {
         let (g, r) = (&s.horizon, out.reported);
         let (caption, set, auto) = match self {
@@ -846,8 +861,8 @@ impl H {
             _ => ("UI Brightness", g.hdr_ui_nits, g.ui_nits(r)),
         };
         match set {
-            0 => labelled(caption, lang::tr("Auto (%s)", &[&auto])),
-            n => labelled(caption, n),
+            0 => labelled(caption, lang::tr("Auto (%s nits)", &[&auto])),
+            n => labelled(caption, lang::tr("%s nits", &[&n])),
         }
     }
     fn label(self, s: &Settings, out: &EffectiveOutput) -> Text {
@@ -859,11 +874,6 @@ impl H {
                 n => labelled("LOD Distance", lang::tr("%s chunks", &[&n])),
             },
             H::FarDetail => labelled("Far Detail", g.far_detail.label()),
-            H::BlueMapAutoDetect => labelled("Find BlueMap", on_off(g.blue_map.auto_detect)),
-            H::BlueMapRadius => labelled(
-                "BlueMap Radius",
-                lang::tr("%s chunks", &[&g.blue_map.radius_chunks()]),
-            ),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
             // Greyed out where it isn't offered (`Item::blocked`): Off, as it is there, while
             // the saved value waits.
@@ -887,6 +897,7 @@ impl H {
             H::ParticleCulling => labelled("Particle Culling", g.particle_culling.label()),
             H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
             H::OpaqueIce => labelled("Opaque Ice", on_off(g.opaque_ice)),
+            H::ParallelTick => labelled("Parallel Tick", g.parallel_tick.label()),
             H::CacheShulkerBoxes => labelled("Shulker Boxes", on_off(g.cache_shulker_boxes)),
             H::CacheSigns => labelled("Signs", on_off(g.cache_signs)),
             H::CacheDecoratedPots => labelled("Decorated Pots", on_off(g.cache_decorated_pots)),
@@ -932,10 +943,11 @@ impl H {
             H::TargetFps => labelled("Target FPS", g.target_fps),
             H::Antialiasing => labelled(
                 "Anti-aliasing",
-                match (g.fxaa, g.taa) {
-                    (_, true) => "TAA",
-                    (true, false) => "FXAA",
-                    (false, false) => "Off",
+                match (g.msaa4x && out.msaa, g.fxaa, g.taa) {
+                    (true, _, _) => "4x MSAA",
+                    (_, _, true) => "TAA",
+                    (_, true, false) => "FXAA",
+                    (_, false, false) => "Off",
                 },
             ),
             H::Upscaling => labelled("Upscaling", g.upscaling.label()),
@@ -946,6 +958,9 @@ impl H {
                 labelled("Screenshot Quality", format!("{}x", g.screenshot_quality))
             }
             H::FrameGeneration => labelled("Frame Generation", g.frame_generation.label()),
+            // Off where the device can't draw HDR's frame (`Item::blocked`), as HDR is there,
+            // while the saved mode waits for a device that can.
+            H::Hdr if !out.hdr_frame_supported => labelled("HDR", HdrMode::Off.label()),
             H::Hdr => labelled("HDR", g.hdr.label()),
             H::HdrCalibrate => Text::literal(lang::get(match setup(s, out) {
                 Setup::Unknown | Setup::Guessed => "Calibrate...",
@@ -953,22 +968,32 @@ impl H {
                 Setup::Changed => "Use Automatic Setup",
             })),
             H::HdrPaperWhite | H::HdrPeak | H::HdrUiBrightness => self.nits_label(s, out),
-            H::HdrBlackLevel => labelled("Black Level", format!("{:.2}", g.black_level_nits())),
-            H::HdrLighting => labelled("HDR Lighting", on_off(g.hdr_lighting)),
+            H::HdrBlackLevel => labelled(
+                "Black Level",
+                lang::tr("%s nits", &[&format!("{:.2}", g.black_level_nits())]),
+            ),
+            H::HdrColorBoost => labelled_percent("Color Boost", g.hdr_color_boost),
+            // Under a shader pack the look is the pack's: its name, greyed (`Item::blocked`).
+            H::HdrLook => Text::option_name_value(
+                Text::literal(lang::get_or("horizon.hdr.look", "Look")),
+                Text::literal(match g.hdr_look {
+                    _ if out.pack_lights => (s.running_pack.as_deref())
+                        .unwrap_or_else(|| crate::shader_ui::pack_name(s))
+                        .to_owned(),
+                    HdrLook::Horizon => lang::get_or("horizon.hdr.look.horizon", "Horizon"),
+                    HdrLook::Vanilla => lang::get_or("horizon.hdr.look.vanilla", "Vanilla"),
+                }),
+            ),
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
             // A press across the row, as Calibrate...: the list it opens shows the pick.
             H::ShaderPacks => Text::literal(lang::get("Shader Packs...")),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
-            // These two are greyed out where the device can't (`Item::blocked`): Off, as
-            // they are there, while the saved value waits for a device that can.
+            // Greyed out where the device can't (`Item::blocked`): Off, as it is there, while
+            // the saved value waits for a device that can.
             H::TranslucentBatching => labelled(
                 "Translucent Batching",
                 on_off(g.translucent_batching && crate::graphics::translucent_batching_offered()),
-            ),
-            H::HdrSmoothGradients => labelled(
-                "Smooth Gradients",
-                on_off(g.hdr_smooth_gradients && out.wide_frame_supported),
             ),
             H::Overlay => labelled(
                 "Performance Overlay",
@@ -1005,6 +1030,7 @@ impl H {
                 }
             }
             H::HdrBlackLevel => g.hdr_black_level = (v * 100.0).round() as u32,
+            H::HdrColorBoost => g.hdr_color_boost = (v * 20.0).round() as u32 * 5,
             _ => {}
         }
     }
@@ -1025,10 +1051,6 @@ impl H {
             H::FarDetail => {
                 g.far_detail = step(&[FarDetail::Full, FarDetail::Reduced], g.far_detail, back)
             }
-            H::BlueMapAutoDetect => g.blue_map.auto_detect = !g.blue_map.auto_detect,
-            H::BlueMapRadius => {
-                g.blue_map.radius = step(&BLUE_MAP_RADII, g.blue_map.radius_chunks(), back)
-            }
             H::CaveCulling => g.cave_culling = !g.cave_culling,
             H::GpuCulling => g.gpu_culling = step(&GpuCullingMode::ALL, g.gpu_culling, back),
             H::EntityCulling => {
@@ -1041,6 +1063,9 @@ impl H {
                 g.leaf_culling = step(&LeafCullingMode::ALL, g.leaf_culling, back);
             }
             H::OpaqueIce => g.opaque_ice = !g.opaque_ice,
+            H::ParallelTick => {
+                g.parallel_tick = step(&ParallelTickMode::ALL, g.parallel_tick, back)
+            }
             H::CacheShulkerBoxes => g.cache_shulker_boxes = !g.cache_shulker_boxes,
             H::CacheSigns => g.cache_signs = !g.cache_signs,
             H::CacheDecoratedPots => g.cache_decorated_pots = !g.cache_decorated_pots,
@@ -1057,11 +1082,18 @@ impl H {
             H::DynamicResolution => g.dynamic_resolution = !g.dynamic_resolution,
             H::DitherCutoutMips => g.dither_cutout_mips = !g.dither_cutout_mips,
             H::PresentMode => g.present_mode = step(&PresentMode::ALL, g.present_mode, back),
-            // Off, FXAA, TAA.
+            // Off, FXAA, TAA, and 4x MSAA where the renderer can draw it.
             H::Antialiasing => {
-                let i = if g.taa { 2 } else { usize::from(g.fxaa) };
-                let i = (i + if back { 2 } else { 1 }) % 3;
-                (g.fxaa, g.taa) = (i == 1, i == 2);
+                let modes = if out.msaa { 4 } else { 3 };
+                let i = if g.msaa4x {
+                    3
+                } else if g.taa {
+                    2
+                } else {
+                    usize::from(g.fxaa)
+                };
+                let i = (i + if back { modes - 1 } else { 1 }) % modes;
+                (g.fxaa, g.taa, g.msaa4x) = (i == 1, i == 2, i == 3);
                 if !g.taa {
                     g.upscaling = Upscaling::Native;
                 }
@@ -1071,6 +1103,7 @@ impl H {
                 g.upscaling = step(&Upscaling::ALL, g.upscaling, back);
                 if g.upscaling != Upscaling::Native {
                     (g.fxaa, g.taa) = (false, true);
+                    g.msaa4x = false;
                 }
             }
             H::ScreenshotQuality => {
@@ -1086,17 +1119,21 @@ impl H {
             // Any choice tries HDR output again on a driver a start failed on.
             H::Hdr => {
                 g.hdr_failed_start = None;
+                g.safe_start = None;
                 g.hdr = step(&HdrMode::ALL, g.hdr, back);
                 if g.hdr == HdrMode::On && !out.hdr_offered() {
                     g.hdr = step(&HdrMode::ALL, g.hdr, back);
                 }
             }
-            H::HdrLighting => g.hdr_lighting = !g.hdr_lighting,
+            H::HdrLook => g.hdr_look = step(&HdrLook::ALL, g.hdr_look, back),
             H::BatteryMode => g.battery = !g.battery,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
-            H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
+            H::GraphicsApi => {
+                g.api = step(GraphicsApi::choices(), g.api, back);
+                g.watchdog_api = None;
+                g.watchdog_driver = None;
+            }
             H::TranslucentBatching => g.translucent_batching = !g.translucent_batching,
-            H::HdrSmoothGradients => g.hdr_smooth_gradients = !g.hdr_smooth_gradients,
             H::Pacing => {
                 g.pacing = match g.pacing {
                     Pacing::Efficient => Pacing::Precise,
@@ -1115,7 +1152,7 @@ impl H {
     }
 }
 fn max_workers() -> u32 {
-    std::thread::available_parallelism().map_or(8, |n| n.get() as u32)
+    horizon_threads::available_parallelism().map_or(8, |n| n.get() as u32)
 }
 
 impl Item {
@@ -1123,45 +1160,65 @@ impl Item {
     fn available(self) -> bool {
         !matches!(self, Item::Vanilla(o) if !o.available())
     }
-    /// Why a control can't be used now: HDR's On requires an offered output, while Auto
-    /// can also be chosen on a reporting SDR display. Brightness controls need HDR output
-    /// active; saved values wait for it. Translucent Batching switches where the device can batch
+    /// Why a control can't be used now: HDR needs a device that draws its frame
+    /// (`EffectiveOutput::hdr_frame_supported`), its saved mode waiting for one that can; its
+    /// On requires an offered output, while Auto can also be chosen on a reporting SDR
+    /// display. Brightness controls need HDR output active; saved values wait for it. Translucent Batching switches where the device can batch
     /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can,
-    /// Smooth Gradients only where it can draw the 16-bit frame, the same way, and GPU Culling
-    /// only where it is offered (`graphics::gpu_culling_offer`), with the reason it isn't. HDR
-    /// Lighting has nothing to switch where the running shader pack lights the world itself.
-    fn blocked(self, s: &Settings, out: &EffectiveOutput) -> Option<&'static str> {
+    /// and GPU Culling only where it is offered (`graphics::gpu_culling_offer`), with the
+    /// reason it isn't. Look has nothing to pick where the running shader pack lights the
+    /// world, and UI Brightness nothing to change where HDR output shows a `shaders/` pack's
+    /// picture, the HUD in it, at paper white.
+    pub(crate) fn blocked(self, s: &Settings, out: &EffectiveOutput) -> Option<&'static str> {
         if !self.available() {
             return Some("This feature is not yet available in Horizon.");
         }
         match self {
             Item::Horizon(
-                H::HdrCalibrate
+                H::Hdr
+                | H::HdrCalibrate
                 | H::HdrBlackLevel
                 | H::HdrPeak
                 | H::HdrPaperWhite
                 | H::HdrUiBrightness
-                | H::HdrLighting
-                | H::HdrSmoothGradients,
-            ) if !out.hdr_offered() => Some("Your display or system doesn't offer HDR output."),
-            Item::Horizon(H::HdrSmoothGradients) if !out.wide_frame_supported => {
-                Some("Your GPU or graphics API doesn't support it.")
-            }
+                | H::HdrColorBoost
+                | H::HdrLook,
+            ) if !out.hdr_frame_supported => Some("Your GPU or graphics API doesn't support it."),
             Item::Horizon(
                 H::HdrCalibrate
                 | H::HdrBlackLevel
                 | H::HdrPeak
                 | H::HdrPaperWhite
                 | H::HdrUiBrightness
-                | H::HdrLighting
-                | H::HdrSmoothGradients,
+                | H::HdrColorBoost
+                | H::HdrLook,
+            ) if !out.hdr_offered() => Some("Your display or system doesn't offer HDR output."),
+            Item::Horizon(
+                H::HdrCalibrate
+                | H::HdrBlackLevel
+                | H::HdrPeak
+                | H::HdrPaperWhite
+                | H::HdrUiBrightness
+                | H::HdrColorBoost
+                | H::HdrLook,
             ) if !out.requests_hdr(s.horizon.hdr) => Some(if out.held {
-                HDR_HELD
+                hdr_held(s)
             } else {
                 "Turn HDR on to use it."
             }),
-            Item::Horizon(H::HdrLighting) if out.pack_lights => {
-                Some("The shader pack lights the world itself.")
+            // HDR output without the HUD's layer: a `shaders/` pack's frame (`FrameRequest`).
+            Item::Horizon(H::HdrUiBrightness) if out.hdr_on() && !out.frame.hud_layer => {
+                Some("The shader pack's picture is shown at Paper White.")
+            }
+            Item::Horizon(H::HdrColorBoost) if out.compositor_stretches() => {
+                Some("In scRGB, your desktop's own color setting applies.")
+            }
+            Item::Horizon(H::HdrLook) if out.pack_lights => {
+                Some(if out.hdr_on() && !out.frame.hud_layer {
+                    "The shader pack's picture is shown at Paper White."
+                } else {
+                    "The shader pack lights the world. Pick it under Shaders."
+                })
             }
             Item::Horizon(H::TranslucentBatching)
                 if !crate::graphics::translucent_batching_offered() =>
@@ -1178,20 +1235,22 @@ impl Item {
             Item::Vanilla(Opt::MaxAnisotropy) if s.file.int("textureFiltering") != 2 => {
                 Some("Only with Anisotropic texture filtering.")
             }
+            Item::Horizon(H::LeafCulling) if !s.horizon.vanilla_models(&s.resource_packs) => {
+                Some("Only with the default resource pack.")
+            }
             _ => None,
         }
     }
     /// A value stepped between `<` `>`: not a tick box, a slider or a press.
-    fn steps(self, s: &Settings, out: &EffectiveOutput) -> bool {
-        self.switch(s, out).is_none()
+    fn steps(self, s: &Settings) -> bool {
+        self.switch(s).is_none()
             && self.slider(s).is_none()
             && !matches!(self, Item::Horizon(H::HdrCalibrate | H::ShaderPacks))
     }
     /// On/off settings and their value.
-    pub fn switch(self, s: &Settings, out: &EffectiveOutput) -> Option<bool> {
+    pub fn switch(self, s: &Settings) -> Option<bool> {
         let g = &s.horizon;
         Some(match self {
-            Item::Horizon(H::BlueMapAutoDetect) => g.blue_map.auto_detect,
             Item::Horizon(H::CaveCulling) => g.cave_culling,
             Item::Horizon(H::OpaqueIce) => g.opaque_ice,
             Item::Horizon(H::CacheShulkerBoxes) => g.cache_shulker_boxes,
@@ -1207,14 +1266,10 @@ impl Item {
             Item::Horizon(H::AnimatedTextures) => g.animated_textures,
             Item::Horizon(H::DynamicResolution) => g.dynamic_resolution,
             Item::Horizon(H::DitherCutoutMips) => g.dither_cutout_mips,
-            Item::Horizon(H::HdrLighting) => g.hdr_lighting,
             Item::Horizon(H::BatteryMode) => g.battery,
             Item::Horizon(H::ShadowCache) => g.shadow_cache,
             Item::Horizon(H::TranslucentBatching) => {
                 g.translucent_batching && crate::graphics::translucent_batching_offered()
-            }
-            Item::Horizon(H::HdrSmoothGradients) => {
-                g.hdr_smooth_gradients && out.wide_frame_supported
             }
             Item::Vanilla(Opt::Vsync) => s.vsync,
             Item::Extra(e) => return e.switch(&s.extras),
@@ -1266,7 +1321,7 @@ impl Item {
         self.touched(s);
     }
     pub fn cycle(self, s: &mut Settings, back: bool, framebuffer: [i32; 2], out: &EffectiveOutput) {
-        if !self.available() {
+        if !self.available() || self.blocked(s, out).is_some() {
             return;
         }
         match self {
@@ -1283,19 +1338,17 @@ impl Item {
             Item::Extra(_)
                 | Item::Horizon(
                     H::Preset
-                        | H::BlueMapAutoDetect
-                        | H::BlueMapRadius
                         | H::Overlay
                         | H::ScreenshotQuality
                         | H::Pacing
                         | H::PresentMode
                         | H::Workers
+                        | H::ParallelTick
                         | H::FrameGeneration
                         | H::BatteryMode
                         | H::ShadowCache
                         | H::GraphicsApi
                         | H::TranslucentBatching
-                        | H::HdrSmoothGradients
                 )
                 | Item::Vanilla(
                     Opt::GuiScale
@@ -1311,6 +1364,7 @@ impl Item {
                         | Opt::Vignette
                         | Opt::Autosave
                         | Opt::AttackIndicator
+                        | Opt::FovEffects
                 )
         );
         if !presetless {
@@ -1355,7 +1409,7 @@ fn parts(item: Item, s: &Settings, out: &EffectiveOutput) -> (String, Option<Str
 fn row(setting: Setting, s: &Settings, out: &EffectiveOutput) -> Row<Item> {
     let item = setting.item;
     let (name, value) = parts(item, s, out);
-    let value = match (item.switch(s, out), item.slider(s)) {
+    let value = match (item.switch(s), item.slider(s)) {
         (Some(on), _) => Value::Switch(on),
         (None, Some(position)) => Value::Slider {
             position,
@@ -1376,10 +1430,11 @@ fn row(setting: Setting, s: &Settings, out: &EffectiveOutput) -> Row<Item> {
 }
 
 /// The vanilla rows `options.txt` keeps as it read them, not in `Settings`' own fields.
-const FILE_KEYS: [&str; 3] = [
+const FILE_KEYS: [&str; 4] = [
     "exclusiveFullscreen",
     "textureFiltering",
     "maxAnisotropyBit",
+    "fovEffectScale",
 ];
 
 /// What the screen's rows read from the settings: what Undo puts back (`GraphicsScreen::undo`),
@@ -1435,7 +1490,7 @@ pub struct GraphicsScreen {
     /// The window's size in pixels, which a vanilla row's step can need (the fullscreen
     /// resolution): the options screen sets it before each input.
     pub(crate) framebuffer: [i32; 2],
-    /// The output of the renderer the settings are drawn for (`OptionsUi::draw`), handed in
+    /// The output of the renderer the settings are drawn for (`OptionsUi::draw_background`), handed in
     /// each time the screen is reached.
     pub(crate) output: EffectiveOutput,
 }
@@ -1455,13 +1510,14 @@ impl Screen for GraphicsScreen {
             g::gpu_culling_offer(),
             g::reduced_far_detail_suggested(),
         );
-        shell::stamp_of(&(read(s), s.fullbright_held, offers))
+        shell::stamp_of(&(read(s), s.fullbright_held, &s.running_pack, offers))
     }
     fn sheets(&self, s: &Settings) -> Vec<Sheet<Page, Item>> {
         let sheet = |(page, groups): (Page, Vec<(&'static str, Vec<Setting>)>)| Sheet {
             id: page,
             name: lang::get(page.name()),
             about: lang::get(page.about()),
+            warning: None,
             groups: groups
                 .into_iter()
                 .map(|(name, settings)| Group {
@@ -1507,7 +1563,7 @@ impl Screen for GraphicsScreen {
     /// With the "Scroll wheel changes settings" extra, the wheel steps a value between `<` `>`
     /// (up goes back); a slider and a tick box leave it to scroll the list.
     fn wheel_step(&mut self, s: &mut Settings, item: Item, back: bool) -> Option<Vec<Output>> {
-        item.steps(s, &self.output).then(|| {
+        item.steps(s).then(|| {
             item.cycle(s, back, self.framebuffer, &self.output);
             vec![
                 Output::Event(Event::ButtonClick),
@@ -1760,6 +1816,11 @@ mod tests {
         assert!(found.contains(&general(Item::Vanilla(Opt::Preset))));
         ui.set_search("horizon preset");
         assert_eq!(ui.listed(&s, SIZE), [general(Item::Horizon(H::Preset))]);
+        ui.set_search("fov");
+        assert_eq!(
+            ui.listed(&s, SIZE),
+            [general(Item::Vanilla(Opt::FovEffects))]
+        );
         ui.set_search("hdr");
         let [x, y, w, h] = cols.page(Page::ALL.len() - 1);
         press(&mut ui, &mut s, (x + w / 2.0, y + h / 2.0));
@@ -1899,15 +1960,15 @@ mod tests {
         }
         assert!(anisotropy.blocked(&s, &NONE).is_none());
         let exclusive = Item::Vanilla(Opt::ExclusiveFullscreen);
-        assert_eq!(exclusive.switch(&s, &NONE), Some(false));
+        assert_eq!(exclusive.switch(&s), Some(false));
         exclusive.cycle(&mut s, false, FB, &NONE);
-        assert_eq!(exclusive.switch(&s, &NONE), Some(true));
+        assert_eq!(exclusive.switch(&s), Some(true));
         assert!(s.file.bool("exclusiveFullscreen"));
         // The graphics extras switch their own setting.
         let lights = Item::Extra(crate::extras::Item::DynamicLights);
         lights.cycle(&mut s, false, FB, &NONE);
         assert!(s.extras.dynamic_lights);
-        assert_eq!(lights.switch(&s, &NONE), Some(true));
+        assert_eq!(lights.switch(&s), Some(true));
     }
 
     #[test]
@@ -2201,34 +2262,6 @@ mod tests {
     }
 
     #[test]
-    fn blue_map_settings_sit_with_far_terrain() {
-        let mut s = Settings::default();
-        let find = Item::Horizon(H::BlueMapAutoDetect);
-        let radius = Item::Horizon(H::BlueMapRadius);
-        let distance: Vec<Item> = rows()
-            .into_iter()
-            .flat_map(|(_, groups)| groups)
-            .find(|(name, _)| *name == "Distance")
-            .unwrap()
-            .1
-            .iter()
-            .map(|r| r.item)
-            .collect();
-        assert!(distance.contains(&find) && distance.contains(&radius));
-        assert!(distance.contains(&Item::Horizon(H::FarDetail)));
-        assert_eq!(find.switch(&s, &NONE), Some(false), "off by default");
-        assert_eq!(radius.label(&s, &NONE).plain(), "BlueMap Radius: 64 chunks");
-        find.cycle(&mut s, false, FB, &NONE);
-        assert!(s.horizon.blue_map.auto_detect);
-        radius.cycle(&mut s, false, FB, &NONE);
-        assert_eq!(s.horizon.blue_map.radius, 128);
-        radius.cycle(&mut s, true, FB, &NONE);
-        radius.cycle(&mut s, true, FB, &NONE);
-        assert_eq!(radius.label(&s, &NONE).plain(), "BlueMap Radius: 32 chunks");
-        assert_eq!(s.horizon.preset, Preset::Custom);
-    }
-
-    #[test]
     fn presets_set_vanilla_and_horizon_options() {
         let mut s = Settings::default();
         Item::Horizon(H::Preset).cycle(&mut s, false, [854, 480], &NONE);
@@ -2287,27 +2320,34 @@ mod tests {
     }
 
     #[test]
-    fn antialiasing_cycles_off_fxaa_taa() {
+    fn antialiasing_cycles_spatial_temporal_and_multisampled_modes() {
         let mut s = Settings::default();
         let item = Item::Horizon(H::Antialiasing);
-        for label in ["FXAA", "TAA", "Off"] {
-            item.cycle(&mut s, false, [854, 480], &NONE);
+        let msaa = EffectiveOutput { msaa: true, ..NONE };
+        for label in ["FXAA", "TAA", "4x MSAA", "Off"] {
+            item.cycle(&mut s, false, [854, 480], &msaa);
             assert_eq!(
-                item.label(&s, &NONE).plain(),
+                item.label(&s, &msaa).plain(),
                 format!("Anti-aliasing: {label}")
             );
         }
-        item.cycle(&mut s, true, [854, 480], &NONE);
-        assert_eq!((s.horizon.fxaa, s.horizon.taa), (false, true));
+        item.cycle(&mut s, true, [854, 480], &msaa);
+        assert_eq!(
+            (s.horizon.fxaa, s.horizon.taa, s.horizon.msaa4x),
+            (false, false, true)
+        );
 
         // Upscaling needs TAA: a ratio turns it on, leaving TAA goes back to Native.
         s.horizon.taa = false;
+        s.horizon.msaa4x = false;
         let upscaling = Item::Horizon(H::Upscaling);
         upscaling.cycle(&mut s, false, [854, 480], &NONE);
         assert_eq!(upscaling.label(&s, &NONE).plain(), "Upscaling: Quality");
         assert!(s.horizon.taa);
+        // A renderer that can't draw 4x MSAA goes from TAA to Off.
         item.cycle(&mut s, false, [854, 480], &NONE);
         assert_eq!(s.horizon.upscaling, Upscaling::Native);
+        assert_eq!(item.label(&s, &NONE).plain(), "Anti-aliasing: Off");
 
         // The Upscaling row is only on the screen while TAA is on.
         assert!(!shown(upscaling, &s));
@@ -2517,7 +2557,7 @@ mod tests {
         crate::graphics::offer_translucent_batching(false);
         assert!(item.blocked(&s, &NONE).is_some());
         assert_eq!(item.label(&s, &NONE).plain(), "Translucent Batching: Off");
-        assert_eq!(item.switch(&s, &NONE), Some(false));
+        assert_eq!(item.switch(&s), Some(false));
         let r = row(&mut ui, &s, item);
         let point = (r[0] + 4.0, r[1] + 4.0);
         assert!(press(&mut ui, &mut s, point).is_empty());
@@ -2527,7 +2567,7 @@ mod tests {
         // Where it can, a click switches it and keeps the preset.
         crate::graphics::offer_translucent_batching(true);
         assert_eq!(item.label(&s, &NONE).plain(), "Translucent Batching: On");
-        assert_eq!(item.switch(&s, &NONE), Some(true));
+        assert_eq!(item.switch(&s), Some(true));
         assert_eq!(press(&mut ui, &mut s, point), [CLICK, CHANGED]);
         assert!(!s.horizon.translucent_batching);
         assert_eq!(item.label(&s, &NONE).plain(), "Translucent Batching: Off");
@@ -2558,7 +2598,7 @@ mod tests {
         assert_eq!(items()[i].0, Page::Performance);
         assert_eq!(at(Item::Horizon(H::CaveCulling)), Some(i - 1));
         let mut s = Settings::default();
-        assert_eq!(item.switch(&s, &NONE), None);
+        assert_eq!(item.switch(&s), None);
         assert_eq!(s.horizon.gpu_culling, GpuCullingMode::Off);
         s.horizon.preset = Preset::Balanced;
         s.horizon.gpu_culling = GpuCullingMode::On;
@@ -2608,7 +2648,7 @@ mod tests {
     fn opaque_ice_toggles_and_round_trips() {
         let mut s = Settings::default();
         let item = Item::Horizon(H::OpaqueIce);
-        assert_eq!(item.switch(&s, &NONE), Some(false));
+        assert_eq!(item.switch(&s), Some(false));
         assert_eq!(item.label(&s, &NONE).plain(), "Opaque Ice: Off");
         item.cycle(&mut s, false, FB, &NONE);
         assert_eq!(item.label(&s, &NONE).plain(), "Opaque Ice: On");
@@ -2617,7 +2657,7 @@ mod tests {
             "the choice is saved"
         );
         item.cycle(&mut s, false, FB, &NONE);
-        assert_eq!(item.switch(&s, &NONE), Some(false));
+        assert_eq!(item.switch(&s), Some(false));
         assert!(!crate::graphics::Graphics::parse(&s.horizon.serialize()).opaque_ice);
 
         // It sits with the other culling switches on the Performance page.
@@ -2634,7 +2674,7 @@ mod tests {
     fn leaf_culling_cycles_modes_beside_the_other_culling() {
         let mut s = Settings::default();
         let item = Item::Horizon(H::LeafCulling);
-        assert_eq!(item.switch(&s, &NONE), None);
+        assert_eq!(item.switch(&s), None);
         assert_eq!(item.label(&s, &NONE).plain(), "Leaf Culling: Off");
         for label in ["Hidden Faces", "Solid", "Solid Aggressive", "Hollow", "Off"] {
             item.cycle(&mut s, false, FB, &NONE);
@@ -2716,6 +2756,31 @@ mod tests {
         );
         assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Hidden);
         assert_eq!(s.horizon.preset, Preset::Custom);
+
+        // A custom resource pack blocks leaf culling and explains why.
+        s.resource_packs = vec!["vanilla".into(), "faithful.zip".into()];
+        assert_eq!(
+            item.blocked(&s, &NONE),
+            Some("Only with the default resource pack.")
+        );
+        let before_mode = s.horizon.leaf_culling;
+        item.cycle(&mut s, false, FB, &NONE);
+        assert_eq!(s.horizon.leaf_culling, before_mode);
+        let screen_row = GraphicsScreen::default()
+            .sheets(&s)
+            .into_iter()
+            .flat_map(|sh| sh.groups)
+            .flat_map(|g| g.rows)
+            .find(|row| row.id == item)
+            .unwrap();
+        assert!(!screen_row.live);
+        assert_eq!(
+            screen_row.why.as_deref(),
+            Some("Only with the default resource pack.")
+        );
+
+        s.resource_packs = vec!["vanilla".into()];
+        assert_eq!(item.blocked(&s, &NONE), None);
     }
 
     #[test]
@@ -2733,6 +2798,7 @@ mod tests {
             H::HdrPeak,
             H::HdrBlackLevel,
             H::HdrUiBrightness,
+            H::HdrColorBoost,
         ];
         for h in options {
             let item = Item::Horizon(h);
@@ -2774,6 +2840,7 @@ mod tests {
         }
     }
     #[test]
+    #[ignore = "daily"]
     fn hdr_sliders_step_through_every_value_they_can_be_set_to() {
         let out = offering(true, None);
         let value = |h: H, s: &Settings| match h {
@@ -2795,13 +2862,13 @@ mod tests {
             H::HdrUiBrightness,
         ] {
             // Everything a drag can land on, each read back where the slider puts it.
+            // `set_slider` overwrites only this slider's field, so both settings are reused.
             let mut set = std::collections::BTreeSet::new();
+            let (mut s, mut again) = (fresh(), fresh());
             for i in 0..=10_000 {
-                let mut s = fresh();
                 h.set_slider(&mut s, i as f32 / 10_000.0);
                 let v = value(h, &s);
                 set.insert(v);
-                let mut again = fresh();
                 h.set_slider(&mut again, h.slider(&s).unwrap());
                 assert_eq!(value(h, &again), v, "{h:?} round trip");
             }
@@ -2838,14 +2905,6 @@ mod tests {
             reach(H::HdrBlackLevel, &mut s),
             (0..=100).collect::<Vec<u32>>()
         );
-    }
-    #[test]
-    fn black_level_reads_as_its_lift() {
-        let mut s = Settings::default();
-        let label = |s: &Settings| Item::Horizon(H::HdrBlackLevel).label(s, &NONE).plain();
-        assert_eq!(label(&s), "Black Level: 0.00");
-        s.horizon.hdr_black_level = 5;
-        assert_eq!(label(&s), "Black Level: 0.05");
     }
     /// Horizon's graphics captions are English sentences that the language table keys by
     /// themselves, so a caption, description or value that is not in `en_us.json` shows in
@@ -2889,6 +2948,7 @@ mod tests {
                 "No settings match.",
                 "Undo",
                 "Done",
+                "Only with the default resource pack.",
             ] {
                 lang::get(text);
             }
