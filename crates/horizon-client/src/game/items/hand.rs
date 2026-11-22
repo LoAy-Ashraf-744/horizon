@@ -737,26 +737,22 @@ impl Game<'_> {
         if visible.0 == held.0 && visible.1.as_ref() == Some(stack) {
             return;
         }
-        if !mod_api::__private::item_listens(
-            mod_api::HookId::ShouldCauseReequipAnimation,
-            &stack.item,
-        ) && !mod_api::__private::item_listens(
-            mod_api::HookId::ShouldCauseReequipAnimationInSlot,
-            &stack.item,
-        ) {
-            return;
-        }
         let hand = if h == 0 { Hand::Main } else { Hand::Off };
         let slot = if h == 0 { "mainhand" } else { "offhand" };
         let slot_changed = h == 0 && visible.0 != held.0;
         let mut reequip = !*same;
-        self.native_should_cause_reequip_animation(
-            stack,
-            visible.1.as_ref(),
-            hand,
-            slot_changed,
-            &mut reequip,
-        );
+        if mod_api::__private::item_listens(
+            mod_api::HookId::ShouldCauseReequipAnimation,
+            &stack.item,
+        ) {
+            self.native_should_cause_reequip_animation(
+                stack,
+                visible.1.as_ref(),
+                hand,
+                slot_changed,
+                &mut reequip,
+            );
+        }
         self.native_should_cause_reequip_animation_in_slot(
             stack,
             visible.1.as_ref(),

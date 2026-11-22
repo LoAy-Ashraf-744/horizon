@@ -39,16 +39,6 @@ impl ItemPart for Stick {
             event.reequip = answer;
         }
     }
-    fn should_cause_reequip_animation_in_slot(
-        &self,
-        _: &dyn ClientHost,
-        event: &mut ShouldCauseReequipAnimationInSlotEvent<'_>,
-    ) {
-        SLOT_ASKED
-            .lock()
-            .unwrap()
-            .push((event.slot.to_owned(), event.reequip));
-    }
     fn should_cause_block_break_reset(
         &self,
         _: &dyn ClientHost,
@@ -69,6 +59,16 @@ impl Hooks for Parts {
     fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
         let key = r.item_key("minecraft:stick");
         r.item_part(key, Stick);
+    }
+    fn should_cause_reequip_animation_in_slot(
+        &self,
+        _: &dyn ClientHost,
+        event: &mut ShouldCauseReequipAnimationInSlotEvent<'_>,
+    ) {
+        SLOT_ASKED
+            .lock()
+            .unwrap()
+            .push((event.slot.to_owned(), event.reequip));
     }
 }
 

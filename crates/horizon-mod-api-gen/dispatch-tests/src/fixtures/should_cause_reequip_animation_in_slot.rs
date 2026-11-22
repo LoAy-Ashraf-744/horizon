@@ -1,10 +1,8 @@
-/// A slot-aware reequip part: records the slot and the answer it arrived with, then answers its own.
+/// A slot-aware reequip mod: records the slot and the answer it arrived with, then answers its own.
 struct SlotReequipProbe(bool, Arc<Mutex<Vec<(String, bool)>>>);
 
-impl ItemPart for SlotReequipProbe {
-    fn item_subscribed(&self) -> &'static [Option<HookId>] {
-        &[Some(HookId::ShouldCauseReequipAnimationInSlot)]
-    }
+#[mod_api::__subscriptions]
+impl Hooks for SlotReequipProbe {
     fn should_cause_reequip_animation_in_slot(
         &self,
         _: &dyn ClientHost,
@@ -19,15 +17,15 @@ impl ItemPart for SlotReequipProbe {
 }
 
 #[test]
-fn slot_aware_reequip_parts_hear_the_slot_and_answer_in_turn() {
-    install(Vec::<ModEntry>::new().into());
+fn slot_aware_reequip_mods_hear_the_slot_and_answer_in_turn() {
     let heard = Arc::new(Mutex::new(Vec::new()));
-    install_parts(Parts {
-        items: [true, false]
-            .map(|answer| leak(SlotReequipProbe(answer, heard.clone())) as &dyn ItemPart)
-            .into(),
-        ..Default::default()
-    });
+    install(
+        vec![
+            ModEntry::new("first", Box::new(SlotReequipProbe(true, heard.clone()))),
+            ModEntry::new("second", Box::new(SlotReequipProbe(false, heard.clone()))),
+        ]
+        .into(),
+    );
     let stick = |count| ItemStack {
         item: "fixture:stick".into(),
         count,
@@ -42,11 +40,11 @@ fn slot_aware_reequip_parts_hear_the_slot_and_answer_in_turn() {
         false,
         &mut reequip,
     );
-    // The second part is given the first part's answer, and its own is the last word.
+    // The second mod is given the first mod's answer, and its own is the last word.
     assert!(!reequip);
     assert_eq!(
         *heard.lock().unwrap(),
         [("offhand".to_owned(), false), ("offhand".to_owned(), true)]
     );
-    install_parts(Parts::default());
+    install(Vec::<ModEntry>::new().into());
 }
