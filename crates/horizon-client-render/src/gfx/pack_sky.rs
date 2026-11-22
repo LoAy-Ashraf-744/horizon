@@ -442,27 +442,3 @@ pub(super) fn parts(
     });
     parts
 }
-
-/// Native fallback quads use indices, while pack geometry uses triangle vertices. End
-/// flashes are not a sun or moon and retain the entire existing range.
-pub(super) fn celestial_ranges(
-    vertices: u32,
-    end_sky: bool,
-    own_sun: bool,
-    visibility: horizon_shaders::SkyVisibility,
-) -> impl Iterator<Item = Range<u32>> {
-    let end = vertices / 4 * 6;
-    let sun = visibility.sun && !own_sun;
-    // Retain the native/default single contiguous draw without allocating per frame.
-    let ranges = if end_sky || (sun && visibility.moon) {
-        [Some(0..end), None]
-    } else if visibility.moon {
-        [(end > 6).then_some(6..end), None]
-    } else {
-        [
-            (sun && end >= 6).then_some(0..6),
-            (end > 12).then_some(12..end),
-        ]
-    };
-    ranges.into_iter().flatten()
-}

@@ -425,48 +425,41 @@ fn pack_visibility_selects_geometry_without_changing_order_or_unrelated_parts() 
 }
 
 #[test]
-fn pack_visibility_native_fallback_preserves_end_flashes_and_native_sun_ownership() {
-    use super::super::pack_sky::celestial_ranges;
-    for mask in 0u8..4 {
-        let visibility = horizon_shaders::SkyVisibility {
-            sun: mask & 1 != 0,
-            moon: mask & 2 != 0,
-            ..Default::default()
-        };
-        for own_sun in [false, true] {
-            let expected: Vec<u32> = match (mask, own_sun) {
-                (1, false) => (0..6).collect(),
-                (2, _) | (3, true) => (6..12).collect(),
-                (3, false) => (0..12).collect(),
-                _ => Vec::new(),
-            };
-            assert_eq!(
-                celestial_ranges(8, false, own_sun, visibility)
-                    .flatten()
-                    .collect::<Vec<_>>(),
-                expected
-            );
-            let mut extra = expected;
-            extra.extend(12..18);
-            assert_eq!(
-                celestial_ranges(12, false, own_sun, visibility)
-                    .flatten()
-                    .collect::<Vec<_>>(),
-                extra
-            );
-            assert!(
-                celestial_ranges(12, true, own_sun, visibility)
-                    .flatten()
-                    .eq(0..18)
-            );
-            assert!(
-                celestial_ranges(0, false, own_sun, visibility)
-                    .flatten()
-                    .next()
-                    .is_none()
-            );
-        }
-    }
+fn a_pack_switch_and_a_pack_sky_each_hide_their_own_body() {
+    use super::pack_visibility::visible_bodies;
+    use crate::mesher::{LOW, VERY_BRIGHT, Vertex};
+    let quad = |tier: u8| {
+        let mut v: Vertex = bytemuck::Zeroable::zeroed();
+        v.layer = 2 | u32::from(tier) << 16;
+        [v; 4]
+    };
+    // The sun's quad first, the moon's last (`Game::celestial_geometry`).
+    let sun_and_moon = [quad(VERY_BRIGHT), quad(LOW)].concat();
+    let switches = |sun, moon| horizon_shaders::SkyVisibility {
+        sun,
+        moon,
+        ..Default::default()
+    };
+    let drawn = |own: (bool, bool), visibility| {
+        visible_bodies(&sun_and_moon, false, own, visibility)
+    };
+    // Nothing hides anything.
+    assert_eq!(drawn((false, false), switches(true, true)), 0..12);
+    // The switch hides one body, the pack's own sky the other.
+    assert_eq!(drawn((true, false), switches(true, false)), 0..0);
+    assert_eq!(drawn((false, true), switches(false, true)), 0..0);
+    // Each alone leaves the other.
+    assert_eq!(drawn((true, false), switches(true, true)), 6..12);
+    assert_eq!(drawn((false, true), switches(true, true)), 0..6);
+    assert_eq!(drawn((false, false), switches(false, true)), 6..12);
+    assert_eq!(drawn((false, false), switches(true, false)), 0..6);
+    // The End's flashes are neither a sun nor a moon: they keep their whole range.
+    let flashes = [quad(VERY_BRIGHT), quad(VERY_BRIGHT)].concat();
+    assert_eq!(
+        visible_bodies(&flashes, true, (true, true), switches(false, false)),
+        0..12
+    );
+    assert_eq!(visible_bodies(&[], false, (false, false), switches(true, true)), 0..0);
 }
 
 #[test]

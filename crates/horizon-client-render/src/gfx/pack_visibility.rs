@@ -1,5 +1,5 @@
 //! Pack visibility controls for the native fallback, retaining the native HDR body passes.
-use super::{Frame, Renderer, pack_sky};
+use super::{Frame, Renderer};
 use horizon_shaders::SkyVisibility;
 
 impl Renderer {
@@ -47,30 +47,23 @@ impl Renderer {
     ) {
         draw_sky_part(pass, visibility, &self.dark_disc, None, 3);
     }
+}
 
-    pub(super) fn draw_visible_bodies(
-        &self,
-        pass: &mut wgpu::RenderPass<'_>,
-        frame: &Frame<'_>,
-        vertices: u32,
-        hdr_gain: bool,
-        visibility: SkyVisibility,
-    ) {
-        // The Overworld's sun is first; a native pack drawing its own skips it.
-        let own_sun = !frame.end_sky
-            && self
-                .native
-                .as_ref()
-                .is_some_and(super::native_pack::NativePack::hides_sun);
-        // Keep main's HDR sun treatment and resource-pack core/sky exception.
-        let lifted = hdr_gain
-            && self.hdr.as_ref().is_some_and(|h| h.lighting)
-            && !self.core_sky.as_ref().is_some_and(|c| c.draws_disc());
-        pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
-        for range in pack_sky::celestial_ranges(vertices, frame.end_sky, own_sun, visibility) {
-            self.celestial.draw_bodies(pass, lifted, range);
-        }
-    }
+/// The celestial quads the native pass draws: `celestial::bodies`, with the sun's dropped where a
+/// pack's sky draws its own (`own_sun`) or its `shaders.properties` sets `sun=false`, and the
+/// moon's likewise. The End's flashes are neither and keep their whole range.
+pub(super) fn visible_bodies(
+    quads: &[crate::mesher::Vertex],
+    end_sky: bool,
+    (own_sun, own_moon): (bool, bool),
+    visibility: SkyVisibility,
+) -> std::ops::Range<u32> {
+    let hide = |own: bool, shown: bool| !end_sky && (own || !shown);
+    super::celestial::bodies(
+        quads,
+        hide(own_sun, visibility.sun),
+        hide(own_moon, visibility.moon),
+    )
 }
 
 /// Native sunrise and void submission share the vanilla sky visibility request. Keeping
