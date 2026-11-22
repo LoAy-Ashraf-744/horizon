@@ -2324,19 +2324,26 @@ impl<R: RandomSource> LootContext<'_, R> {
             // block's drops, an explosion's): the fields it holds answer, and
             // the ones it cannot answer fail, as `loot.rs` requires. A roll
             // with no captured place keeps this engine's historical answer of
-            // true (a double plant's other half is taken as there). Unknown
-            // types fail, as in loot.rs.
+            // true (a double plant's other half is taken as there). The place
+            // holds the origin's facts only, so a check at an offset has
+            // nothing to read and keeps that answer too: `tall_grass` and
+            // `large_fern` gate each pool on the other half one block up or
+            // down (`BlockLootSubProvider.createDoublePlantWithSeedDrops`).
+            // Unknown types fail, as in loot.rs.
             "minecraft:location_check" => match self.location {
                 Some(location) => location(c).unwrap_or(true),
                 None => horizon_world::loot::current_native_loot_place()
                     .as_deref()
                     .is_none_or(|place| {
-                        horizon_world::loot::evaluate_location_check(
-                            c,
-                            Some(place),
-                            None,
-                            &|registry, value| self.items.holder_set(registry, value),
-                        )
+                        ["offsetX", "offsetY", "offsetZ"]
+                            .iter()
+                            .any(|axis| c[*axis].as_i64().is_some_and(|n| n != 0))
+                            || horizon_world::loot::evaluate_location_check(
+                                c,
+                                Some(place),
+                                None,
+                                &|registry, value| self.items.holder_set(registry, value),
+                            )
                     }),
             },
             // A mod's own kind: the condition hook answers.
@@ -4311,6 +4318,59 @@ mod tests {
             1,
             "an unbound roll keeps the legacy answer"
         );
+    }
+
+    /// `BlockLootSubProvider.createDoublePlantWithSeedDrops`: each pool of
+    /// `tall_grass` is gated by a `location_check` for the other half, one
+    /// block up or down. The captured place holds the broken half's origin
+    /// only, so those checks keep the engine's answer of true: the plant
+    /// still drops when it is broken, with the origin's facts captured.
+    #[test]
+    fn a_double_plants_offset_location_checks_still_hold_with_a_captured_place() {
+        use horizon_world::loot::{LootBlockState, LootPlace, with_native_loot_place};
+        let registry = BlockRegistry::from_facts_json(
+            &br#"{"defaults":{"minecraft:tall_grass":0},"states":[["tall_grass",false,false,"","minecraft:tall_grass"]]}"#[..],
+        )
+        .unwrap();
+        let other_half = |half: &str, offset_y: i64| {
+            json!({"type":"minecraft:location_check","offsetY":offset_y,
+                "predicate":{"block":{"blocks":"minecraft:tall_grass","state":{"half":half}}}})
+        };
+        let mut items = Items::for_tests(HashMap::new());
+        items.loot = Arc::new(
+            [(
+                "minecraft:blocks/tall_grass".into(),
+                json!({"pools":[
+                    {"rolls":1,"conditions":[other_half("upper", 1)],
+                     "entries":[{"type":"minecraft:item","name":"minecraft:wheat_seeds"}]},
+                    {"rolls":1,"conditions":[other_half("lower", -1)],
+                     "entries":[{"type":"minecraft:item","name":"minecraft:wheat_seeds"}]},
+                ]}),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let mut properties = horizon_world::chunk::BlockProperties::new();
+        properties.insert("half".to_owned(), "lower".to_owned());
+        let place = LootPlace {
+            origin: Some([0.5, 64.0, 0.5]),
+            block: Some(LootBlockState {
+                name: "minecraft:tall_grass".to_owned(),
+                properties,
+            }),
+            ..LootPlace::default()
+        };
+        let mut random = LegacyRandom::new(1);
+        let drops = with_native_loot_place(place, || {
+            items.block_drops(
+                &registry,
+                BlockStateId(0),
+                BlockLootRoll::default(),
+                &mut random,
+                None,
+            )
+        });
+        assert_eq!(drops.len(), 2, "both pools hold, one per half");
     }
 
     fn ctx<'a>(
