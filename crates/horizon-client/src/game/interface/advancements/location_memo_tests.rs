@@ -110,7 +110,13 @@ fn scenario(memo: bool, ignored: u8, blind_to_revokes: bool) -> (Vec<String>, u3
             .update_all(|guest| guest.advancements_loaded = true);
         let eval = |game: &mut Game<'_>, what: &str, log: &mut Vec<String>| {
             game.ticks = (game.ticks / 20 + 1) * 20;
-            game.as_guest(12, |game| game.tick_advancements()).unwrap();
+            let ticks = game.ticks as i32;
+            game.as_guest(12, |game| {
+                // The location trigger runs on the player's own tick count, every 20th.
+                game.player.as_mut().unwrap().health.tick_count = ticks;
+                game.tick_advancements()
+            })
+            .unwrap();
             let guest = game.lan.as_ref().unwrap().hub.guest(12).unwrap();
             let granted: Vec<String> = guest
                 .advancements
@@ -254,7 +260,13 @@ fn a_reload_asks_the_criteria_again() {
         };
         let eval = |game: &mut Game<'_>| -> Vec<String> {
             game.ticks = (game.ticks / 20 + 1) * 20;
-            game.as_guest(12, |game| game.tick_advancements()).unwrap();
+            let ticks = game.ticks as i32;
+            game.as_guest(12, |game| {
+                // The location trigger runs on the player's own tick count, every 20th.
+                game.player.as_mut().unwrap().health.tick_count = ticks;
+                game.tick_advancements()
+            })
+            .unwrap();
             let guest = game.lan.as_ref().unwrap().hub.guest(12).unwrap();
             guest
                 .advancements
@@ -301,4 +313,22 @@ fn a_reload_asks_the_criteria_again() {
         );
     });
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// A `/reload` whose packs add no advancement leaves the tree as it was, but the biome tags the
+/// criteria read may be others: a memo made before it is not used after it.
+#[test]
+fn a_reload_that_keeps_the_tree_forgets_the_memo() {
+    let tree = Arc::new(Tree::default());
+    let mut adv = AdvState::default();
+    let memo = LocationMemo {
+        tree: tree.clone(),
+        reloads: adv.reloads,
+        dimension: "minecraft:overworld".into(),
+        biome: 3,
+        rest: Vec::new(),
+    };
+    assert!(memo.is(&tree, adv.reloads, "minecraft:overworld", 3));
+    adv.reset_tree();
+    assert!(!memo.is(&tree, adv.reloads, "minecraft:overworld", 3));
 }

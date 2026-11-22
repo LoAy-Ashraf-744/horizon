@@ -5,10 +5,13 @@ use super::*;
 /// ask where the player is: for the same tree, dimension and biome there, those not granted then
 /// are all unmet, so only `rest` (the other criteria, in tree order) are asked. Kept in the
 /// player's progress, so it goes with the player; a revoke of the progress forgets it (a criterion
-/// that was granted when it was made is asked again), a grant cannot make it wrong (a granted
+/// that was granted when it was made is asked again; so does a `/reload`, which can change the
+/// tags the criteria read without making another tree), a grant cannot make it wrong (a granted
 /// criterion is never asked).
 struct LocationMemo {
     tree: Arc<Tree>,
+    /// `AdvState::reloads` when it was made.
+    reloads: u32,
     dimension: String,
     biome: u16,
     rest: Vec<(usize, usize)>,
@@ -92,14 +95,15 @@ impl Game<'_> {
         #[cfg(test)]
         let known = known.filter(|_| !NO_MEMO.get());
         if let Some(((dimension, biome), m)) = known
-            && m.is(&tree, dimension, *biome)
+            && m.is(&tree, self.adv.reloads, dimension, *biome)
         {
             #[cfg(test)]
             SKIPS.set(SKIPS.get() + 1);
             self.trigger_criteria(&tree, &m.rest, test);
             return;
         }
-        self.trigger_criteria(&tree, list, test);
+        // The memo is stored before the criteria are granted: a reward function that revokes one
+        // of them clears it (`Progress::revoke`), and must not find it put back.
         if let Some((dimension, biome)) = place {
             let rest = list
                 .iter()
@@ -107,12 +111,14 @@ impl Game<'_> {
                 .filter(|&(ai, ci)| !asks_only_where(&tree.list[ai].criteria[ci].conditions))
                 .collect();
             self.adv.progress.memo = Some(Arc::new(LocationMemo {
-                tree,
+                tree: tree.clone(),
+                reloads: self.adv.reloads,
                 dimension: dimension.to_owned(),
                 biome,
                 rest,
             }));
         }
+        self.trigger_criteria(&tree, list, test);
     }
 
     /// The dimension and the biome there of the player, which the criteria that only ask where
@@ -131,14 +137,16 @@ impl Game<'_> {
 }
 
 impl LocationMemo {
-    /// Whether it was worked out from the same tree (the same one, not an equal one: a reload
-    /// makes another, with the data packs' tags), dimension and biome.
-    fn is(&self, tree: &Arc<Tree>, dimension: &str, biome: u16) -> bool {
+    /// Whether it was worked out from the same tree (the same one, not an equal one), the same
+    /// reload of the data (a reload that adds no advancements keeps the tree, not the tags),
+    /// dimension and biome.
+    fn is(&self, tree: &Arc<Tree>, reloads: u32, dimension: &str, biome: u16) -> bool {
         #[cfg(test)]
         let ignored = IGNORED.get();
         #[cfg(not(test))]
         let ignored = 0u8;
-        (ignored & 1 != 0 || Arc::ptr_eq(&self.tree, tree))
+        self.reloads == reloads
+            && (ignored & 1 != 0 || Arc::ptr_eq(&self.tree, tree))
             && (ignored & 2 != 0 || self.dimension == dimension)
             && (ignored & 4 != 0 || self.biome == biome)
     }
