@@ -1246,9 +1246,10 @@ impl Game<'_> {
         add_passengers(tag, riders);
     }
 
-    /// Read an unsimulated entity without assigning it a new identity.
+    /// Read an unsimulated entity without assigning it a new identity. An eye of ender's
+    /// item is set in `tag`, the compound the entity is kept with.
     pub(super) fn other_from_nbt(
-        tag: &Tag,
+        tag: &mut Tag,
         id: u32,
         kind: &str,
     ) -> Option<super::commands::OtherEntity> {
@@ -1265,7 +1266,7 @@ impl Game<'_> {
         }
         let interaction = super::interactions::is_interaction(kind)
             .then(|| super::interactions::InteractionState::from_tag(tag));
-        let rotation = entity_nbt::rotation(tag);
+        let rotation = entity_nbt::loaded_rotation(tag);
         Some(super::commands::OtherEntity {
             attachment_lifetime: Default::default(),
             join: Default::default(),
@@ -1277,8 +1278,7 @@ impl Game<'_> {
             item_transformation,
             interaction,
             knot_check,
-            eye: (kind == "minecraft:eye_of_ender")
-                .then(|| super::end::SummonedEye::load(&mut tag.clone())),
+            eye: (kind == "minecraft:eye_of_ender").then(|| super::end::SummonedEye::load(tag)),
         })
     }
 
@@ -1296,7 +1296,7 @@ impl Game<'_> {
         let quarantined = super::general::quarantined_kind(kind).then(|| tag.clone());
         strip_finalize(&mut tag);
         let id = self.next_entity + 1;
-        let other = Self::other_from_nbt(&tag, id, kind)?;
+        let other = Self::other_from_nbt(&mut tag, id, kind)?;
         self.next_entity = id;
         let uuid = with_constructor_uuid(entity_nbt::uuid(&tag));
         if let Some(state) = transferred {
@@ -1500,9 +1500,6 @@ impl Game<'_> {
     /// The vehicle with this UUID, among the ones in the world.
     pub(super) fn vehicle_by_uuid(&self, uuid: [i32; 4]) -> Option<u32> {
         self.persist.uuids.iter().find_map(|(&id, &found)| {
-            let mob_boat_or_cart = self.mobs.iter().any(|mob| mob.id == id)
-                || self.boats.iter().any(|boat| boat.id == id)
-                || self.carts.iter().any(|cart| cart.id == id);
             (found == uuid
                 && (self.mobs.iter().any(|mob| mob.id == id && !mob.removed)
                     || (self.boats.iter().any(|boat| boat.id == id)
@@ -1516,7 +1513,10 @@ impl Game<'_> {
                             super::commands::Target::Cart(id),
                         ))
                     // A vehicle of another kind (an armor stand, a display...).
-                    || (!mob_boat_or_cart && self.passenger_present(id))))
+                    || (!(self.mobs.iter().any(|mob| mob.id == id)
+                        || self.boats.iter().any(|boat| boat.id == id)
+                        || self.carts.iter().any(|cart| cart.id == id))
+                        && self.passenger_present(id))))
             .then_some(id)
         })
     }
@@ -1918,16 +1918,43 @@ impl Game<'_> {
         // yet given an id is not a lookup member: its join stands in.
         let mut out: HashMap<(i32, i32), Vec<Tag>> =
             keys.iter().map(|k| (*k, Vec::new())).collect();
+        let orb_entries: HashMap<_, _> = self
+            .orbs
+            .iter()
+            .filter(|orb| keys.contains(&chunk_of(orb.position)))
+            .map(|orb| (orb.join, orb.section_order))
+            .collect();
         {
             let admission = self.resident_entities.table.get_mut().admission_order();
-            for (key, mut tags) in roots {
+            for tags in roots.values_mut() {
                 tags.sort_by_cached_key(|(id, join, tag)| {
                     (section_order(tag), admission(*id).unwrap_or(*join))
                 });
-                out.entry(key)
-                    .or_default()
-                    .extend(tags.into_iter().map(|(_, _, tag)| tag));
             }
+        }
+        for (key, mut tags) in roots {
+            if !orb_entries.is_empty() {
+                // Reorder only the root-orb slots so pickups preserve section entry
+                // order across reload. Passenger orbs are written with their vehicles.
+                let mut slots = Vec::new();
+                let mut orbs = Vec::new();
+                for (_, join, tag) in &mut tags {
+                    if let Some(&entry) = orb_entries.get(join)
+                        && self.saved_entity_is_root(tag)
+                    {
+                        let order = (section_order(tag), entry);
+                        orbs.push((order, std::mem::replace(tag, Tag::End)));
+                        slots.push(tag);
+                    }
+                }
+                orbs.sort_by_key(|(order, _)| *order);
+                for (slot, (_, tag)) in slots.into_iter().zip(orbs) {
+                    *slot = tag;
+                }
+            }
+            out.entry(key)
+                .or_default()
+                .extend(tags.into_iter().map(|(_, _, tag)| tag));
         }
         for key in keys {
             let unknown = if remove {
@@ -2189,6 +2216,17 @@ impl Game<'_> {
             (chunk_of(o.position), tag)
         })
     }
+    /// `Projectile.addAdditionalSaveData`'s `Owner`: the reference the projectile was loaded
+    /// with, else the UUID of the mob that shot it (a shulker's bullet), which the mob keeps
+    /// for its own save. A player's is left to the callers that write it.
+    pub(in crate::game) fn projectile_owner_uuid(&mut self, i: usize) -> Option<[i32; 4]> {
+        let p = &self.creatures.projectiles[i];
+        match (p.owner_uuid, p.owner) {
+            (Some(uuid), _) => Some(uuid),
+            (None, Some(Who::Mob(id))) => Some(self.uuid_for(id)),
+            _ => None,
+        }
+    }
     pub(super) fn save_projectile(
         &mut self,
         i: usize,
@@ -2198,6 +2236,8 @@ impl Game<'_> {
         if !keys.contains(&chunk_of(p.position)) || !entity_nbt::saved_with_chunk(p) {
             return None;
         }
+        let owner = self.projectile_owner_uuid(i);
+        let p = &self.creatures.projectiles[i];
         // `ShulkerBullet`'s target, over the UUID bridge: a mob the level has
         // no UUID for writes no `Target` rather than a made-up one.
         let target = match &p.kind {
@@ -2207,7 +2247,6 @@ impl Game<'_> {
             } => self.save_who_uuid(*who),
             _ => None,
         };
-        let owner = p.owner_uuid;
         let raw = anon_raw(&self.persist, p.kind.id(), p.position);
         let uuid = saved_uuid(&self.persist, p.id);
         let in_block = p
