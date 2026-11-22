@@ -104,7 +104,7 @@ impl Game<'_> {
         }
         // AbstractArrow.onHitEntity rolls the arrow's damage (its crit) first.
         let mut arrow = p.clone();
-        self.shot_damage(&mut arrow, None);
+        self.shot_damage(&mut arrow, Some("minecraft:armor_stand"), Who::Mob(id));
         let outcome = if self.command_damage_stand(id, damage_type, causing) {
             EntityHit::Hurt
         } else {
