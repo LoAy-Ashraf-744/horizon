@@ -66,24 +66,28 @@ fn an_exit_portal_in_an_unloaded_chunk_waits_for_it() {
     // The search reads the portal from the saved chunk, so it cannot read
     // its rectangle from the level yet.
     assert_eq!(
-        game.find_exit_portal(&plan),
+        game.search_exit_portal(&plan),
         ExitSearch::Unloaded(BlockPos::new(33, 64, 8), vec![(2, 0)])
     );
     // The exit waits for that chunk, with its portal ticket, and builds
     // nothing (`ensureLoadedAndValid`).
-    assert_eq!(game.nether_exit_portal(&plan), Exit::Waiting);
+    assert_eq!(game.resolve_exit_portal(&plan), Exit::Waiting);
     assert!(
         game.tickets.portal_tickets().iter().any(|t| t.chunk == (2, 0)),
         "the found portal's chunk has a ticket"
     );
+    // The methods mods call keep their old answers: nothing while it waits.
+    assert_eq!(game.find_exit_portal(&plan), None);
+    assert_eq!(game.nether_exit_portal(&plan), None);
     // Once its chunk is in the level the rectangle is the portal's, not a
     // sheet of air.
     game.world.chunks.insert((2, 0), saved);
-    let ExitSearch::Found(found, rectangle) = game.find_exit_portal(&plan) else {
+    let ExitSearch::Found(found, rectangle) = game.search_exit_portal(&plan) else {
         panic!("the loaded portal is read");
     };
     assert_eq!(found, BlockPos::new(33, 64, 8));
     assert_eq!((rectangle.axis1_size, rectangle.axis2_size), (2, 3));
+    assert_eq!(game.find_exit_portal(&plan), Some((found, rectangle)));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -126,10 +130,10 @@ fn an_exit_portal_spanning_two_chunks_waits_for_both() {
     // The rectangle can reach into the saved neighbour, whose blocks answer
     // air until it loads: both chunks wait.
     assert_eq!(
-        game.find_exit_portal(&plan),
+        game.search_exit_portal(&plan),
         ExitSearch::Unloaded(BlockPos::new(31, 64, 8), vec![(1, 0), (2, 0)])
     );
-    assert_eq!(game.nether_exit_portal(&plan), Exit::Waiting);
+    assert_eq!(game.resolve_exit_portal(&plan), Exit::Waiting);
     for chunk in [(1, 0), (2, 0)] {
         assert!(
             game.tickets.portal_tickets().iter().any(|t| t.chunk == chunk),
@@ -140,13 +144,13 @@ fn an_exit_portal_spanning_two_chunks_waits_for_both() {
     // loaded half, and the arrival uses it.
     game.streaming
         .insert_remote(&mut game.world, (*saved).clone());
-    let ExitSearch::Found(found, rectangle) = game.find_exit_portal(&plan) else {
+    let ExitSearch::Found(found, rectangle) = game.search_exit_portal(&plan) else {
         panic!("the fully loaded portal is read");
     };
     assert_eq!(found, BlockPos::new(31, 64, 8));
     assert_eq!(rectangle.min_corner, BlockPos::new(31, 64, 8));
     assert_eq!((rectangle.axis1_size, rectangle.axis2_size), (2, 3));
-    assert_eq!(game.nether_exit_portal(&plan), Exit::Found(rectangle));
+    assert_eq!(game.resolve_exit_portal(&plan), Exit::Found(rectangle));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -526,7 +526,7 @@ impl Game<'_> {
         if self.enter_level(plan.dim).is_err() {
             return false;
         }
-        let exists = !matches!(self.find_exit_portal(plan), ExitSearch::NoPortal);
+        let exists = !matches!(self.search_exit_portal(plan), ExitSearch::NoPortal);
         if let Err(e) = self.enter_level(source) {
             log::error!("could not reopen {}: {e}", source.id());
         }
@@ -1313,7 +1313,7 @@ impl Game<'_> {
                 }
             } else {
                 let plan = trip.plan;
-                match plan.map(|plan| (plan, self.nether_exit_portal(&plan))) {
+                match plan.map(|plan| (plan, self.resolve_exit_portal(&plan))) {
                     Some((plan, Exit::Found(exit))) => {
                         let (at, rotation) = self.arrival(&plan, exit);
                         (at, yaw + rotation)

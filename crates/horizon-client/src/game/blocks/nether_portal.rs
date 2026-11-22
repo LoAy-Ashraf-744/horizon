@@ -588,8 +588,23 @@ impl Game<'_> {
         out
     }
     /// `PortalForcer.findClosestPortalPosition` and the rectangle around it,
-    /// for `plan` in the loaded dimension; builds nothing.
-    pub(in crate::game) fn find_exit_portal(&mut self, plan: &Plan) -> ExitSearch {
+    /// for `plan` in the loaded dimension; builds nothing. A `Game` method
+    /// keeps its name and signature (a mod point): this is
+    /// [`Self::search_exit_portal`] for a caller that only needs the portal
+    /// and its rectangle, and sees `None` while a chunk is still unloaded.
+    #[allow(dead_code)]
+    pub(in crate::game) fn find_exit_portal(
+        &mut self,
+        plan: &Plan,
+    ) -> Option<(BlockPos, FoundRectangle)> {
+        match self.search_exit_portal(plan) {
+            ExitSearch::Found(found, rectangle) => Some((found, rectangle)),
+            ExitSearch::Unloaded(..) | ExitSearch::NoPortal => None,
+        }
+    }
+    /// `find_exit_portal` with what the search found, including a portal
+    /// whose rectangle reaches a chunk the level has not loaded.
+    pub(in crate::game) fn search_exit_portal(&mut self, plan: &Plan) -> ExitSearch {
         let to_nether = plan.dim == Dim::Nether;
         let radius = if to_nether { 16 } else { 128 };
         let border = self.border_bounds();
@@ -631,11 +646,23 @@ impl Game<'_> {
         ExitSearch::Found(found, rectangle)
     }
     /// The exit portal of `plan` in the loaded dimension: the closest one
-    /// within reach, else one built by `PortalForcer.createPortal`.
-    pub(super) fn nether_exit_portal(&mut self, plan: &Plan) -> Exit {
+    /// within reach, else one built by `PortalForcer.createPortal`. A `Game`
+    /// method keeps its name and signature (a mod point): this is
+    /// [`Self::resolve_exit_portal`] for a caller that only needs the
+    /// rectangle, and sees `None` while the exit is still loading.
+    #[allow(dead_code)]
+    pub(super) fn nether_exit_portal(&mut self, plan: &Plan) -> Option<FoundRectangle> {
+        match self.resolve_exit_portal(plan) {
+            Exit::Found(rectangle) => Some(rectangle),
+            Exit::Waiting | Exit::Missing => None,
+        }
+    }
+    /// `nether_exit_portal` with the answer: found, still loading, or
+    /// impossible to build.
+    pub(super) fn resolve_exit_portal(&mut self, plan: &Plan) -> Exit {
         let to_nether = plan.dim == Dim::Nether;
         let border = self.border_bounds();
-        match self.find_exit_portal(plan) {
+        match self.search_exit_portal(plan) {
             ExitSearch::Found(found, rectangle) => {
                 // NetherPortalBlock.getExitPortal: the tickets go on the
                 // chunks of the portal found. The exit can be far from
@@ -1719,7 +1746,7 @@ impl Game<'_> {
                 (at, motion, turn)
             } else {
                 let exit =
-                    horizon_client::spans::time("exit_portal", || self.nether_exit_portal(&plan));
+                    horizon_client::spans::time("exit_portal", || self.resolve_exit_portal(&plan));
                 match exit {
                     Exit::Found(exit) => {
                         let (at, rotation) = self.arrival(&plan, exit);
