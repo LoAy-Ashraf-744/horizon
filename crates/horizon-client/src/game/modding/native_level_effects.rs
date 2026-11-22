@@ -186,12 +186,21 @@ mod tests {
         assert_eq!(game.creatures.lan_particles.len(), 3);
         // The requests share one copy of the options, and a batch over the cap is refused
         // whole.
-        assert!(Arc::ptr_eq(&queued_options(&game, 0), &queued_options(&game, 2)));
+        assert!(Arc::ptr_eq(
+            &queued_options(&game, 0),
+            &queued_options(&game, 2)
+        ));
         let full = vec![[0.0, 64.0, 0.0]; MAX_PARTICLE_POSITIONS];
         assert!(send(&mut game, &full));
-        assert_eq!(game.creatures.lan_particles.len(), 3 + MAX_PARTICLE_POSITIONS);
+        assert_eq!(
+            game.creatures.lan_particles.len(),
+            3 + MAX_PARTICLE_POSITIONS
+        );
         let over = vec![[0.0, 64.0, 0.0]; MAX_PARTICLE_POSITIONS + 1];
         assert!(!send(&mut game, &over));
-        assert_eq!(game.creatures.lan_particles.len(), 3 + MAX_PARTICLE_POSITIONS);
+        assert_eq!(
+            game.creatures.lan_particles.len(),
+            3 + MAX_PARTICLE_POSITIONS
+        );
     }
 }
