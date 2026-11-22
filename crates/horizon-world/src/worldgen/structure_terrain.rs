@@ -22,8 +22,11 @@
 //!   ruined portals). The seed, the old chunks' saved starts and whether a biome
 //!   is cold enough to snow still come from the generator.
 //!
-//! With no provider registered nothing changes: [`answer`] is one read of an
-//! empty list per chunk whose starts are built.
+//! With no provider registered nothing changes: a chunk whose starts are built
+//! costs one check of [`any_registered`], and no request is made.
+//!
+//! A chunk that already has saved starts keeps them whatever a provider answers
+//! ([`Answer::NoStructures`] only stops new starts).
 
 pub use super::anchor::WorldGenerationContext;
 use super::biome::BiomeId;
@@ -242,6 +245,14 @@ pub fn unregister(id: &str) -> bool {
     let removed = list.len() != before;
     *lock = Arc::new(list);
     removed
+}
+
+/// Whether any provider is registered: with none, every answer is [`Answer::Vanilla`].
+pub fn any_registered() -> bool {
+    !providers()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_empty()
 }
 
 /// The registered ids, in the order they are asked.
