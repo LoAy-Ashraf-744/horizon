@@ -663,16 +663,20 @@ impl Game<'_> {
             // STOP_RIDING_JUMP: AbstractHorse and Camel handleStopJump do
             // nothing, and a nautilus' dash is not stopped this way.
             S::PlayerCommand(p) if p.action == 4 => {}
-            // ServerboundResourcePackPacket in play: mods hear the answer even after death
-            // (a declined server.properties required pack is handled on the connection).
+            // ServerboundResourcePackPacket in play: `resource_pack_status_v2` hears the answer
+            // even after death; `resource_pack_status` only while the player lives, as it always
+            // did (a declined server.properties required pack is handled on the connection).
             S::ResourcePack(r) => {
                 let Some(host) = self.lan.as_ref() else {
                     return;
                 };
                 let guest = &host.hub.guests[gi];
-                let (uuid, name) = (guest.uuid, guest.name.clone());
+                let (uuid, name, dead) = (guest.uuid, guest.name.clone(), guest.dead);
                 self.as_guest(conn, |g| {
-                    g.native_resource_pack_status(uuid, &name, r.action, r.id);
+                    g.native_resource_pack_status_v2(uuid, &name, r.id, r.action);
+                    if !dead {
+                        g.native_resource_pack_status(uuid, &name, r.action);
+                    }
                 });
             }
             // START_SPRINTING and STOP_SPRINTING: the hub has set the sprint

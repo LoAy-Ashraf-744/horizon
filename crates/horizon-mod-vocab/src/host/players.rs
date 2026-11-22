@@ -1268,7 +1268,7 @@ pub trait PlayersBackendMut {
     /// downloads `pack.url`, checks it against `pack.sha1` when that is not empty, and asks the
     /// player (with `pack.prompt` when it is set) unless the pack is already loaded or accepted.
     /// A pack with the id of one the client holds replaces it; other ids stack, the newest on
-    /// top. Its answers come to `resource_pack_status` with `pack.id`. `required` only changes
+    /// top. Its answers come to `resource_pack_status_v2` with `pack` as `pack.id`. `required` only changes
     /// what the client's screen offers: the server does not disconnect a player who declines
     /// (only the `server.properties` pack does), so a mod acts on a status 1 itself. Refuses,
     /// sending nothing, with `PlayerPackRefusal`: `Client`, `Stale`, `NoConnection`, `UrlTooLong`

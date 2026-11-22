@@ -165,20 +165,24 @@ fn a_client_cannot_push_or_pop_a_pack() {
     });
 }
 
-/// Connection-status answers reach the listener with the reporting player's context after death.
+/// `resource_pack_status_v2` hears every answer with the reporting player's context, a dead
+/// player's too; `resource_pack_status` keeps its three arguments and hears the living only.
 #[test]
 #[ignore = "daily"]
-fn dead_guests_resource_pack_answers_keep_their_player_and_pack() {
+fn dead_guests_resource_pack_answers_reach_only_the_v2_hook() {
     use horizon_protocol::packets::{configuration::ResourcePackResponse, play::Serverbound as S};
-    use mod_api::{Hooks, ModEntry, ResourcePackStatusEvent, ServerHost};
+    use mod_api::{
+        Hooks, ModEntry, ResourcePackStatusEvent, ResourcePackStatusV2Event, ServerHost,
+    };
     use std::sync::{Arc, Mutex};
 
     #[derive(Debug, PartialEq)]
     struct Answer {
+        version: u8,
         player: u128,
         name: String,
         status: i32,
-        pack: u128,
+        pack: Option<u128>,
         acting_player: Option<u128>,
     }
     struct Observer(Arc<Mutex<Vec<Answer>>>);
@@ -190,10 +194,25 @@ fn dead_guests_resource_pack_answers_keep_their_player_and_pack() {
             event: &mut ResourcePackStatusEvent<'_>,
         ) {
             self.0.lock().unwrap().push(Answer {
+                version: 1,
                 player: event.player,
                 name: event.name.to_owned(),
                 status: event.status,
-                pack: event.pack,
+                pack: None,
+                acting_player: host.players().acting_player().map(|player| player.uuid()),
+            });
+        }
+        fn resource_pack_status_v2(
+            &self,
+            host: &mut dyn ServerHost,
+            event: &mut ResourcePackStatusV2Event<'_>,
+        ) {
+            self.0.lock().unwrap().push(Answer {
+                version: 2,
+                player: event.player,
+                name: event.name.to_owned(),
+                status: event.status,
+                pack: Some(event.pack),
                 acting_player: host.players().acting_player().map(|player| player.uuid()),
             });
         }
@@ -214,6 +233,7 @@ fn dead_guests_resource_pack_answers_keep_their_player_and_pack() {
                     .update_guest(13, |guest| guest.dead = true)
                     .unwrap();
                 let outer = game.lan_acting;
+                // (connection, pack id, Action number); guest 13 is dead.
                 let cases = [(12, 7, 3), (13, 8, 0), (13, 9, 1), (13, 10, 7)];
                 for (conn, id, action) in cases {
                     game.lan_guest_packet(
@@ -222,16 +242,22 @@ fn dead_guests_resource_pack_answers_keep_their_player_and_pack() {
                     );
                     assert_eq!(game.lan_acting, outer);
                 }
-                let expected: Vec<_> = cases
-                    .into_iter()
-                    .map(|(conn, pack, status)| Answer {
-                        player: u128::from(conn),
-                        name: format!("guest{conn}"),
-                        status,
-                        pack,
-                        acting_player: Some(u128::from(conn)),
-                    })
-                    .collect();
+                let answer = |version, conn: u32, pack, status| Answer {
+                    version,
+                    player: u128::from(conn),
+                    name: format!("guest{conn}"),
+                    status,
+                    pack: (version == 2).then_some(pack),
+                    acting_player: Some(u128::from(conn)),
+                };
+                // v2 first, then v1 for the living guest 12; the dead guest 13 only reaches v2.
+                let expected = vec![
+                    answer(2, 12, 7, 3),
+                    answer(1, 12, 7, 3),
+                    answer(2, 13, 8, 0),
+                    answer(2, 13, 9, 1),
+                    answer(2, 13, 10, 7),
+                ];
                 assert_eq!(*answers.lock().unwrap(), expected);
             });
         },

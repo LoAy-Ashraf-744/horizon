@@ -190,9 +190,8 @@ so the URL must be reachable from that player.
 Like vanilla, popping does not retract an offer still waiting in an unanswered consent prompt;
 accepting that prompt can load the pack later. It is not a pending-offer cancellation API.
 
-Version 2 of `resource_pack_status(player, name, status, pack)` hears the answers, with the pack's id,
-including while the player is dead. Version 1 had no `pack` argument; rebuild native and wasm listeners
-against the new SDK. The contract version is catalog metadata, not a supported `hook_version` manifest setting.
+`resource_pack_status_v2(player, name, pack, status)` hears the answers with the pack's id, including while the
+player is dead; `resource_pack_status(player, name, status)` keeps its three arguments and its firing point.
 `required` changes only
 what the client's screen offers: the server does not disconnect a player who declines a pack a mod pushed (it does
 so only for the `server.properties` pack), so a mod that needs the pack kicks on status 1 or 2 itself. Answers to the

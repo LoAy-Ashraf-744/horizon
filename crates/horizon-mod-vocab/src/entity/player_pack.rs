@@ -7,7 +7,7 @@ use crate::Text;
 #[derive(horizon_mod_api_macros::Wire)]
 pub struct ResourcePackOffer {
     /// The pack's identity on the client: pushing the same id again replaces it, and
-    /// `pop_resource_pack` and `resource_pack_status` name it.
+    /// `pop_resource_pack` and `resource_pack_status_v2` name it.
     pub id: u128,
     /// Where the client downloads the zip from; at most 32767 UTF-16 code units.
     pub url: String,
