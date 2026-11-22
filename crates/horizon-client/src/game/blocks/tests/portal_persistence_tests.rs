@@ -14,13 +14,14 @@ fn live_and_saved_portal_counters_follow_runtime_and_data_updates() {
     let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
     let loaded = load_resources(
-        root.clone(),
+        horizon_assets::resource_source::ResourceRoot::directory(root.clone()),
+        Vec::new(),
         None,
         &root,
         &settings,
         std::time::Instant::now(),
         false,
-        true,
+        crate::game::execution_role::ExecutionRole::IntegratedServer,
         &Progress::new(),
         &mut |_, _| unreachable!(),
     )
@@ -36,7 +37,9 @@ fn live_and_saved_portal_counters_follow_runtime_and_data_updates() {
         loaded.gui.unwrap(),
         options,
         settings,
-        Audio::silent(&root),
+        Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+            root.clone(),
+        )),
         None,
     )
     .unwrap();
@@ -83,8 +86,10 @@ fn live_and_saved_portal_counters_follow_runtime_and_data_updates() {
     game.handle_entity_portals();
     for id in &ids {
         assert_eq!(game.portals.entities.get(id).unwrap().cooldown, 4);
+    }
+    for id in &ids[..OWNED] {
         let target = game.level_entity(*id as i32).unwrap();
-        assert_eq!(counter(&game.entity_nbt(target).unwrap()), 4);
+        assert_eq!(counter(&game.command_target_nbt(target).unwrap()), 4);
     }
     let mut nbt = Vec::new();
     let mut saved = Vec::new();
@@ -96,16 +101,17 @@ fn live_and_saved_portal_counters_follow_runtime_and_data_updates() {
             );
         }
         nbt.push(
-            ids.iter()
+            ids[..OWNED]
+                .iter()
                 .map(|id| {
                     let target = game.level_entity(*id as i32).unwrap();
-                    counter(&game.entity_nbt(target).unwrap())
+                    counter(&game.command_target_nbt(target).unwrap())
                 })
                 .collect::<Vec<_>>(),
         );
         let chunks = game.entity_chunks(&std::collections::HashSet::from([(0, 0)]), false);
         saved.push(
-            kinds
+            kinds[..OWNED]
                 .iter()
                 .map(|kind| {
                     counter(
@@ -126,14 +132,14 @@ fn live_and_saved_portal_counters_follow_runtime_and_data_updates() {
     gateway.set_cooldown(7);
     game.end.gateways.insert(id, gateway);
     let target = game.level_entity(id as i32).unwrap();
-    assert_eq!(counter(&game.entity_nbt(target).unwrap()), 7);
+    assert_eq!(counter(&game.command_target_nbt(target).unwrap()), 7);
     game.restore_portal_cooldown(id, &Tag::compound([("PortalCooldown", Tag::Int(3))]));
     assert_eq!(game.end.gateways[&id].cooldown(), 3);
     game.end.gateways.remove(&id);
     // /data merge reads the new zero counter into the live entity, not just its raw tag.
-    for id in ids {
+    for id in ids[..OWNED].iter().copied() {
         let target = game.level_entity(id as i32).unwrap();
-        let mut tag = game.entity_nbt(target).unwrap();
+        let mut tag = game.command_target_nbt(target).unwrap();
         if let Tag::Compound(fields) = &mut tag {
             fields.insert("PortalCooldown".into(), Tag::Int(2));
         }
@@ -141,13 +147,31 @@ fn live_and_saved_portal_counters_follow_runtime_and_data_updates() {
         assert_eq!(game.portals.entities.get(&id).unwrap().cooldown, 2);
         game.portals.entities.get_mut(&id).unwrap().cooldown = 5;
         let target = game.level_entity(id as i32).unwrap();
-        let mut tag = game.entity_nbt(target).unwrap();
+        let mut tag = game.command_target_nbt(target).unwrap();
         if let Tag::Compound(fields) = &mut tag {
             fields.insert("PortalCooldown".into(), Tag::Int(0));
         }
         game.apply_entity_nbt(target, tag).unwrap();
         assert!(!game.portals.entities.contains_key(&id));
     }
+    let stand = Tag::compound([
+        ("id", Tag::String("minecraft:armor_stand".into())),
+        ("UUID", Tag::IntArray(vec![11318, 10, 1, 0])),
+        ("Pos", doubles([4.5, 210.0, 4.5])),
+        ("PortalCooldown", Tag::Int(20)),
+    ]);
+    game.load_listed("minecraft:armor_stand", Some([11318, 10, 1, 0]), None, stand)
+        .unwrap();
+    let id = game.next_entity;
+    game.restore_portal_cooldown(id, &Tag::compound([("PortalCooldown", Tag::Int(20))]));
+    game.portals.entities.get_mut(&id).unwrap().cooldown = 19;
+    let target = game.level_entity(id as i32).unwrap();
+    // An unrelated merge reads the live counter, not the loaded 20, and writes it back.
+    let tag = game.command_target_nbt(target).unwrap();
+    assert_eq!(counter(&tag), 19);
+    game.apply_entity_nbt(target, tag).unwrap();
+    assert_eq!(game.portals.entities[&id].cooldown, 19);
+    game.portals.entities.remove(&id);
     let id = game.next_entity;
     let state = game.portals.entities.entry(id).or_default();
     state.set_inside(BlockPos::new(4, 210, 4), 300);
@@ -158,13 +182,27 @@ fn live_and_saved_portal_counters_follow_runtime_and_data_updates() {
     assert!(game.portals.entities[&id].process.is_some());
     assert_eq!(game.portals.entities[&id].cooldown, 0);
     let report = serde_json::json!({"nbt":nbt,"saved":saved});
+    let owned: Vec<Vec<i64>> = reference["contact"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            row.as_array().unwrap()[..OWNED]
+                .iter()
+                .map(|v| v.as_i64().unwrap())
+                .collect()
+        })
+        .collect();
     for field in ["nbt", "saved"] {
-        assert_eq!(report[field], reference["contact"], "{field}");
+        assert_eq!(report[field], serde_json::json!(owned), "{field}");
     }
     if let Some(path) = std::env::var_os("HORIZON_PORTAL_REPORT") {
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
 }
+/// The first kinds in `kinds` (boat, minecart) are the ones whose data reads
+/// and chunk saves take the live counter here; the others follow elsewhere.
+const OWNED: usize = 2;
 fn counter(tag: &Tag) -> i32 {
     horizon_client::save::number(tag.get("PortalCooldown")).unwrap() as i32
 }
