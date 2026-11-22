@@ -3153,10 +3153,11 @@ def social():
         cmd('/tellraw @s {"text":"click","click_event":{"action":"run_command","command":"/say x"},"underlined":true}'),
         cmd('/title @s title {"selector":"@s"}'),
         cmd('/list uuids'),
-        cmd('/help'),
+        cmd('/help', comparison='vanilla_help'),
         cmd('/help execute'),
         cmd('/help scoreboard players'),
         cmd('/help nonexistent'),
+        cmd('/help give @s minecraft:stone 64'),
         *setup('/scoreboard objectives remove trig', '/scoreboard objectives remove plain'),
     ]
 
@@ -7280,6 +7281,33 @@ def end_crystal_saved_motion():
 
 TAG_CRYSTAL = 15995  # UUIDs of end_crystal_saved_motion's crystals
 
+def armor_stand_air_refills():
+    """#16823: an armor stand is a `LivingEntity`, so `LivingEntity.baseTick` refills its air by 4 a
+    tick up to 300 (`increaseAirSupply`), a marker's too, and in water as well: `armor_stand` is in
+    the `can_breathe_under_water` tag. Read after summoning and after 1, 2 and 22 ticks."""
+    x0, y0, z0 = 3456, 260, 3648
+    chunk = [[x0 >> 4, z0 >> 4]]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False),
+           cmd(f'/fill {x0 + 13} {y0} {z0 + 8} {x0 + 13} {y0 + 1} {z0 + 8} water', False)]
+    uuids = []
+    subjects = (('-1s', ''), ('100s', ''), ('298s', ''), ('-1s', ',Marker:1b'), ('-1s', ',NoGravity:1b'),
+                ('100s', None))
+    for n, (air, extra) in enumerate(subjects, 1):
+        uuids.append(f'000041b7-0000-0000-0000-{n:04x}00000001')
+        x = x0 + 13 if extra is None else x0 + 2 * n
+        ops.append(cmd(f'/summon armor_stand {x}.5 {y0} {z0 + 8}.5 '
+                       f'{{UUID:[I;16823,0,{n},1],Air:{air}{extra or ""}}}', expect_result=1))
+    for wait in (0, 1, 1, 20):
+        if wait:
+            ops.append({'op': 'tick', 'n': wait})
+        for uuid in uuids:
+            ops.append(cmd(f'/data get entity {uuid} Air'))
+    return ops + setup(*[f'/kill {uuid}' for uuid in uuids],
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 1} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def end_crystal_saved_fall():
     """#14671: `Entity.load` reads `OnGround` (`getBooleanOr`) and `fall_distance`, and `saveWithoutId` writes them
     back; `EndCrystal.tick` never moves the crystal nor runs `baseTick`, so both keep what was loaded, through a save
@@ -7490,6 +7518,42 @@ def loaded_dragon_health_above_max():
             cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
     reads()
     return ops + setup('/tick unfreeze', *[f'/kill {uuid}' for uuid in uuids], f'/forceload remove {x0} {z0}')
+
+
+def loaded_minecart_fire():
+    """#16736: a minecart has no `baseTick`, so nothing counts its fire ticks down, and `Entity.move`
+    resets them only on an entity that is not on fire: a cart loaded with `Fire` above 0 keeps it.
+    Read after summoning, after a tick, and after an unload and reload (frozen, so only the save
+    and the load count). Water puts a burning cart out (`WaterFluid.entityInside`)."""
+    x0, y0, z0 = 3648, 260, 3776
+    chunk = [[x0 >> 4, z0 >> 4]]
+    subjects = [('minecart', 'Fire:100s'), ('chest_minecart', 'Fire:100s'), ('hopper_minecart', 'Fire:1s'),
+                ('minecart', 'Fire:0s'), ('minecart', 'Fire:100s')]
+    # The last cart stands in water.
+    wet = f'{x0 + 3 * len(subjects)} {y0} {z0 + 8}'
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False),
+           cmd(f'/setblock {wet} water', False)]
+    uuids = []
+    for n, (kind, fields) in enumerate(subjects, 1):
+        uuids.append(f'00004160-0000-0000-0000-{n:04x}00000001')
+        ops.append(cmd(f'/summon {kind} {x0 + 3 * n}.5 {y0} {z0 + 8}.5 {{UUID:[I;16736,0,{n},1],{fields}}}',
+                       expect_result=1))
+
+    def reads():
+        for uuid in uuids:
+            ops.append(cmd(f'/data get entity {uuid} Fire'))
+
+    reads()
+    ops.append({'op': 'tick', 'n': 1})
+    reads()
+    ops += [cmd('/tick freeze', False), cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
+    reads()
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
 
 
 def loaded_dead_mob():
@@ -8254,6 +8318,65 @@ def mob_fall_clip():
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 30} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
 
+def dispensed_projectile_rotation():
+    """Projectile.shoot sets the angles from the motion as (float)(Mth.atan2(..) * 180.0F / (float)Math.PI): the
+    table Mth.atan2 and the float pi, as every later turn (updateRotation, rotateTowardsMovement) does too.
+    Dispensers shoot each kind; their Rotation is read as they fly."""
+    x0, y0, z0 = 5696, 250, 5696
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256),
+           {'op': 'sync_randoms', 'uniquifier': 16609, 'entity_id': 16609000, 'level_seed': 16609}]
+    shots = [('lingering_potion', 'lingering_potion', 'south'), ('small_fireball', 'fire_charge', 'east'),
+             ('splash_potion', 'splash_potion', 'up'), ('egg', 'egg', 'east'), ('arrow', 'arrow', 'south'),
+             ('snowball', 'snowball', 'west'), ('spectral_arrow', 'spectral_arrow', 'north')]
+    for n, (kind, item, facing) in enumerate(shots):
+        x, z = x0 + 1 + n * 2, z0 + 7
+        ops.append(cmd(f'/setblock {x} {y0} {z} dispenser[facing={facing}]{{Items:[{{Slot:0b,id:"minecraft:{item}",'
+                       f'count:1}}]}}', expect_result=1))
+    for n, _ in enumerate(shots):
+        ops.append(cmd(f'/setblock {x0 + 1 + n * 2} {y0 + 1} {z0 + 7} redstone_block', False))
+
+    def reads():
+        for n, (kind, _, _) in enumerate(shots):
+            ops.append(cmd(f'/data get entity @e[type={kind},x={x0 + 1 + n * 2}.5,y={y0},z={z0 + 7}.5,distance=..6,'
+                           f'sort=nearest,limit=1] Rotation'))
+
+    ops.append({'op': 'tick', 'n': 5})
+    reads()
+    ops.append({'op': 'tick', 'n': 1})
+    reads()
+    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=48,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 2} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
+def text_component_key_order():
+    """ComponentSerialization writes a text component's contents, then `extra`, then its style, and the
+    CompoundTag's HashMap keeps that order among keys sharing a bucket: `text` and `bold` (bucket 11),
+    `keybind`, `extra` and `underlined` (bucket 7). A mob's CustomName and an item's custom_name are
+    read back with /data get."""
+    x0, y0, z0 = 5600, 250, 5600
+    ops = [cmd(f'/forceload add {x0} {z0}', False),
+           {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/tick freeze', False)]
+    names = ['{text:"Sum",color:"green",bold:true}', '{bold:true,color:"green",text:"Sum"}',
+             '{underlined:true,extra:["a"],keybind:"key.jump"}',
+             '{translate:"entity.minecraft.pig",italic:true,fallback:"Pig",strikethrough:true}']
+    for n, name in enumerate(names, 1):
+        # The mob's name is read through command storage (CompoundTag.copy keeps the order): a reply naming
+        # the mob itself would also compare its styled display name.
+        ops.append(cmd(f'/summon pig {x0 + 2 * n}.5 {y0} {z0}.5 {{UUID:[I;16500,0,{n},1],NoAI:1b,NoGravity:1b,'
+                       f'CustomName:{name}}}', False))
+        ops.append(cmd(f'/data modify storage horizon:key_order name set from entity '
+                       f'00004074-0000-0000-0000-{n:04x}00000001 CustomName'))
+        ops.append(cmd('/data get storage horizon:key_order name'))
+        ops.append(cmd(f'/summon item {x0 + 2 * n}.5 {y0} {z0 + 3}.5 {{UUID:[I;16500,1,{n},1],NoGravity:1b,'
+                       f'PickupDelay:32767s,Item:{{id:"minecraft:stone",components:{{"minecraft:custom_name":{name}}}}}}}',
+                       expect_result=1))
+        ops.append(cmd(f'/data get entity 00004074-0000-0001-0000-{n:04x}00000001 Item.components'))
+    return ops + setup('/tick unfreeze', '/data remove storage horizon:key_order name', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
+                       f'/forceload remove {x0} {z0}')
+
 def orb_fall_distance():
     """#14440: an experience orb's fall (`Entity.fallDistance`). `Entity.move` casts a move of a block or
     more over fall-resetting blocks and water, then `checkFallDamage` adds the drop outside water and on
@@ -8765,6 +8888,7 @@ def groups():
         ('animal signed InLove', animal_signed_in_love()),
         ('mob fire resistance damage', mob_fire_resistance_damage()),
         ('armor stand climbing', armor_stand_climbing()),
+        ('armor stand air refills', armor_stand_air_refills()),
         ('painting saved ground', painting_saved_ground()),
         ('mob armor damage', mob_armor_damage()),
         ('mob max health bounds', mob_max_health_bounds()),
@@ -8798,6 +8922,7 @@ def groups():
         ('loaded health above max', loaded_health_above_max()),
         ('loaded wolf taming', loaded_wolf_taming()),
         ('loaded dragon health above max', loaded_dragon_health_above_max()),
+        ('loaded minecart fire', loaded_minecart_fire()),
         ('falling block fall float', falling_block_fall_float()),
         ('explosion infested blocks', explosion_infested_blocks()),
         ('jigsaw default joint', jigsaw_default_joint()),
@@ -8905,12 +9030,14 @@ def groups():
         ('rocket data merge', rocket_data_merge()),
         ('mob fall clip', mob_fall_clip()),
         ('armadillo scute time', armadillo_scute_time()),
+        ('dispensed projectile rotation', dispensed_projectile_rotation()),
         ('falling block fall on', falling_block_fall_on()),
         ('orb fall distance', orb_fall_distance()),
         ('rocket fall distance', rocket_fall_distance()),
         ('vehicle ground and fall', vehicle_ground_and_fall()),
         ('vehicle saved ground and fall', vehicle_saved_ground_and_fall()),
         ('ravager saved movement speed', ravager_saved_movement_speed()),
+        ('text component key order', text_component_key_order()),
         # Last: it leaves the player in other food than it found.
         (player_food.GROUP, player_food.cases(cmd, setup)),
     ]
