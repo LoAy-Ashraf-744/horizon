@@ -346,13 +346,13 @@ fn component_stack_capacity_is_preserved_on_every_split() {
 fn a_loot_place_reads_only_a_loaded_origin() {
     let mut resources = None;
     let (game, _level) = game(&mut resources, "place-residency");
-    let loaded = game.loot_place_at(ORIGIN, None, None);
+    let loaded = game.loot_place_at(ORIGIN, None);
     assert!(loaded.block.is_some(), "a loaded origin has a block");
     assert!(loaded.light.is_some(), "a loaded origin has a light");
     assert!(loaded.can_see_sky.is_some());
     assert!(loaded.structures.is_some());
 
-    let unloaded = game.loot_place_at([40.5, 100.5, 40.5], None, None);
+    let unloaded = game.loot_place_at([40.5, 100.5, 40.5], None);
     assert_eq!(unloaded.origin, Some([40.5, 100.5, 40.5]));
     assert!(unloaded.block.is_none(), "an unloaded origin has no block");
     assert!(unloaded.light.is_none(), "an unloaded origin has no light");
@@ -366,7 +366,7 @@ fn a_loot_place_reads_only_a_loaded_origin() {
         .registry
         .default_state("minecraft:stone")
         .unwrap();
-    let supplied = game.loot_place_at([40.5, 100.5, 40.5], None, Some(stone));
+    let supplied = game.loot_place_with_block([40.5, 100.5, 40.5], None, Some(stone));
     assert_eq!(
         supplied.block.as_ref().map(|block| block.name.as_str()),
         Some("minecraft:stone"),
