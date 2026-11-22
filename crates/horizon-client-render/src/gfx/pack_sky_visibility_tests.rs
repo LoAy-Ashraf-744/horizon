@@ -463,8 +463,8 @@ fn a_pack_switch_and_a_pack_sky_each_hide_their_own_body() {
     // Nothing hides anything.
     assert_eq!(drawn((false, false), switches(true, true)), 0..12);
     // The switch hides one body, the pack's own sky the other.
-    assert_eq!(drawn((true, false), switches(true, false)), 0..0);
-    assert_eq!(drawn((false, true), switches(false, true)), 0..0);
+    assert!(drawn((true, false), switches(true, false)).is_empty());
+    assert!(drawn((false, true), switches(false, true)).is_empty());
     // Each alone leaves the other.
     assert_eq!(drawn((true, false), switches(true, true)), 6..12);
     assert_eq!(drawn((false, true), switches(true, true)), 0..6);
@@ -476,10 +476,7 @@ fn a_pack_switch_and_a_pack_sky_each_hide_their_own_body() {
         visible_bodies(&flashes, true, (true, true), switches(false, false)),
         0..12
     );
-    assert_eq!(
-        visible_bodies(&[], false, (false, false), switches(true, true)),
-        0..0
-    );
+    assert!(visible_bodies(&[], false, (false, false), switches(true, true)).is_empty());
 }
 
 #[test]
