@@ -8,6 +8,10 @@ use super::{Game, creatures::NativeSound, lan_particles::QueuedParticle};
 use horizon_client::particles::ParticleOptions;
 use horizon_world::registry::BlockStateId;
 use mod_api::{LevelRef, SoundSource};
+use std::sync::Arc;
+
+/// The most positions one `level_send_particles_at` call takes.
+pub(super) const MAX_PARTICLE_POSITIONS: usize = 4096;
 
 impl Game<'_> {
     /// The level's dimension id, for a handle of this open on the server.
@@ -92,7 +96,7 @@ impl Game<'_> {
         }
         self.creatures.lan_particles.push(QueuedParticle {
             dimension,
-            options: options.clone(),
+            options: options.clone().into(),
             state,
             at,
             spread,
@@ -103,7 +107,8 @@ impl Game<'_> {
         true
     }
     /// `level_send_particles` around each of `positions`, in order, in one call: all of
-    /// them are queued or none, if any would be refused. Each is still a request of its own.
+    /// them are queued or none, if any would be refused. Each is still a request of its own,
+    /// sharing one copy of `options`. More than `MAX_PARTICLE_POSITIONS` is refused.
     pub(super) fn level_send_particles_at(
         &mut self,
         level: LevelRef,
@@ -117,6 +122,9 @@ impl Game<'_> {
         let Some(dimension) = self.native_level_dimension(level) else {
             return false;
         };
+        if positions.len() > MAX_PARTICLE_POSITIONS {
+            return false;
+        }
         let registry = self.pack.assets.registry;
         let state_ok = |id| registry.state(id).is_some();
         if !positions
@@ -125,11 +133,12 @@ impl Game<'_> {
         {
             return false;
         }
+        let options = Arc::new(options.clone());
         self.creatures
             .lan_particles
             .extend(positions.iter().map(|&at| QueuedParticle {
                 dimension,
-                options: options.clone(),
+                options: Arc::clone(&options),
                 state,
                 at,
                 spread,
@@ -145,6 +154,10 @@ impl Game<'_> {
 mod tests {
     use super::*;
     use horizon_client::particles::ParticleType;
+
+    fn queued_options(game: &Game<'_>, i: usize) -> Arc<ParticleOptions> {
+        Arc::clone(&game.creatures.lan_particles[i].options)
+    }
 
     /// Every position is queued, in order, or none is.
     #[test]
@@ -171,5 +184,14 @@ mod tests {
         assert_eq!(game.creatures.lan_particles.len(), 3);
         assert!(send(&mut game, &[]));
         assert_eq!(game.creatures.lan_particles.len(), 3);
+        // The requests share one copy of the options, and a batch over the cap is refused
+        // whole.
+        assert!(Arc::ptr_eq(&queued_options(&game, 0), &queued_options(&game, 2)));
+        let full = vec![[0.0, 64.0, 0.0]; MAX_PARTICLE_POSITIONS];
+        assert!(send(&mut game, &full));
+        assert_eq!(game.creatures.lan_particles.len(), 3 + MAX_PARTICLE_POSITIONS);
+        let over = vec![[0.0, 64.0, 0.0]; MAX_PARTICLE_POSITIONS + 1];
+        assert!(!send(&mut game, &over));
+        assert_eq!(game.creatures.lan_particles.len(), 3 + MAX_PARTICLE_POSITIONS);
     }
 }

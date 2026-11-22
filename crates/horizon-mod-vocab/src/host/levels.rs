@@ -1283,7 +1283,7 @@ pub trait LevelsBackendMut {
     /// every position is checked as the single one is, and all of them are
     /// queued or none if any would be refused. It saves the mod's calls only:
     /// each position is still a request of its own. An empty list queues
-    /// nothing and answers true.
+    /// nothing and answers true; more than 4096 positions answer false.
     #[access(WorldOnly)]
     fn level_send_particles_at(
         &mut self,
