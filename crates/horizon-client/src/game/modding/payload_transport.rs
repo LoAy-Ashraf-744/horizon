@@ -33,7 +33,7 @@ impl Deferred {
     }
 }
 
-/// Interior-mutable staging for calls that only hold `&self`, drained by the game.
+/// Interior-mutable staging for calls that only hold `&self` outside a transaction, drained by the game.
 /// `Default` and the `push`/`take` pair are the whole contract, so it can be tested alone.
 pub(super) struct SharedQueue<T>(std::cell::RefCell<Vec<T>>);
 impl<T> Default for SharedQueue<T> {
@@ -95,9 +95,14 @@ impl Game<'_> {
             .epoch()
             .ok_or(PayloadSendError::NotNegotiated)?;
         let prepared = endpoint.prepare(&epoch, id, bytes)?;
-        self.native_net
-            .shared_payloads
-            .push(Deferred::new(endpoint.side(), id, epoch, prepared));
+        let deferred = Deferred::new(endpoint.side(), id, epoch, prepared);
+        // Inside a transaction the send goes with it: a handler that fails and rolls back
+        // sends nothing. With none open it waits for the next tick's flush.
+        if let Some(super::transactions::After::Payload(deferred)) = self
+            .stage_after_commit(super::transactions::After::Payload(deferred))
+        {
+            self.native_net.shared_payloads.push(deferred);
+        }
         Ok(PayloadAccepted::Queued)
     }
     /// Move everything staged by `queue_payload_to_server` into the ordinary

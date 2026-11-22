@@ -55,7 +55,8 @@ fn register(r: &mut dyn Registrar) {
 - **From a shared host.** Screen hooks are given `&dyn ClientHost`, which cannot call the
   `&mut` `send_payload_to_server`. `ClientHost::queue_payload_to_server(&self, id, bytes)`
   validates the bytes now and stages them in order; the game publishes them on a later client
-  tick through the same root commit. `Queued` means staged, not delivered. A typed token's
+  tick through the same root commit. Staged inside a transaction, it goes with that
+  transaction: if the handler fails and rolls back, nothing is sent. `Queued` means staged, not delivered. A typed token's
   `ToServer::send` still needs `&mut dyn ClientHost`, so stage the raw bytes from a screen hook
   only for a declaration whose encoding you control.
 - **Schema negotiation.** The derive gives the value type a schema fingerprint (field types in
