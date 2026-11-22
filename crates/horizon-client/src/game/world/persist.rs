@@ -1464,6 +1464,11 @@ impl Game<'_> {
     ) -> Option<(Tag, u32, [i32; 4])> {
         let vehicle = vehicle?;
         let root = parent_vehicle_root(vehicle, others, |id| self.vehicle_of(id))?;
+        // A root vehicle a mod kept out of the saves (`entity_set_saved`) is not in the
+        // rider's file either, or it would come back with the player.
+        if self.persist.unsaved.contains(&root) {
+            return None;
+        }
         let entity = self.vehicle_tree_nbt(root)?;
         let attach = self.uuid_for(vehicle);
         Some((root_vehicle_tag(attach, entity), root, attach))
