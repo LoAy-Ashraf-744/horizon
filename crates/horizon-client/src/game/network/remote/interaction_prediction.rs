@@ -137,7 +137,10 @@ impl Game<'_> {
             }
             if !player
                 && self.with_hand(hand, |g| {
-                    g.item_interact_mob(Some(crate::game::InteractTarget { id, location }))
+                    g.item_interact_mob(Some(crate::game::InteractTarget {
+                        id,
+                        location: pick.location,
+                    }))
                 })
             {
                 return true;
