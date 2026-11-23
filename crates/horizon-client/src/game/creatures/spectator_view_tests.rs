@@ -26,6 +26,60 @@ fn game() -> Game<'static> {
         &settings,
         std::time::Instant::now(),
         false,
+        crate::game::execution_role::ExecutionRole::IntegratedServer,
+        &Progress::new(),
+        &mut |_, _| unreachable!(),
+    )
+    .unwrap();
+    let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+    options.resources = root.clone();
+    options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let mut game = Game::new(
+        res,
+        loaded.pack,
+        loaded.gui.unwrap(),
+        options,
+        settings,
+        Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+            root.to_path_buf(),
+        )),
+        None,
+    )
+    .unwrap();
+    game.build_registries();
+    // The atlas the game bakes at startup: `mob_geometry` finds a body's texture in it.
+    game.gui.atlas = horizon_client::hud::HudAtlas::build(
+        &horizon_assets::resource_source::ResourceSource::directory(root.clone()),
+    )
+    .unwrap();
+    game.set_allow_commands(true);
+    game.world
+        .chunks
+        .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+    game.block_ticks
+        .add_empty_chunk(ChunkPos::new(0, 0))
+        .unwrap();
+    for command in ["forceload add 0 0", "fill 0 63 0 15 63 15 stone"] {
+        assert!(game.run_command(command), "{command}");
+    }
+    game
+}
+
+/// Like [`game`], but loads resources with `ExecutionRole::Client` so block models
+/// (`model_catalog` and `layer_names`) are baked for `block_model_vertices` /
+/// `sulfur_cube_body_geometry`; `UiResources::load` builds `gui.atlas`.
+fn client_game() -> Game<'static> {
+    let root = root();
+    let settings = Settings::default();
+    let loaded = load_resources(
+        horizon_assets::resource_source::ResourceRoot::directory(root.clone()),
+        Vec::new(),
+        None,
+        &root,
+        &settings,
+        std::time::Instant::now(),
+        false,
         crate::game::execution_role::ExecutionRole::Client,
         &Progress::new(),
         &mut |_, _| unreachable!(),
@@ -103,7 +157,7 @@ fn a_spectator_sees_the_invisible_body() {
 #[test]
 #[ignore = "daily"]
 fn an_invisible_sulfur_cube_keeps_its_contained_block() {
-    let mut game = game();
+    let mut game = client_game();
     let types = MobTypes::load(&root()).unwrap();
     let kind = Arc::new(types.types["minecraft:sulfur_cube"].clone());
     let mut cube = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
