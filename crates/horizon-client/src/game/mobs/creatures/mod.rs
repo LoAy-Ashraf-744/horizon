@@ -7981,7 +7981,11 @@ impl Game<'_> {
             let layers_only = invisible && outline.is_none() && is_player && !seen_invisible;
             let sulfur_cube_block = mob.species() == Species::SulfurCube
                 && self.sulfur_cube_contained_block(mob).is_some();
-            if invisible && outline.is_none() && !layers_only && !seen_invisible && !sulfur_cube_block
+            if invisible
+                && outline.is_none()
+                && !layers_only
+                && !seen_invisible
+                && !sulfur_cube_block
             {
                 continue;
             }
