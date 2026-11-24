@@ -220,6 +220,11 @@ impl Launcher {
         let state = self.selected_game_state();
         let any_game_active = !matches!(state, SelectedGameState::Idle);
         let is_selected_starting = matches!(state, SelectedGameState::SelectedStarting);
+        let other_starting_without_home = matches!(
+            state,
+            SelectedGameState::OtherStarting { id }
+                if !other_game_info(&self.instances.list, id).1
+        );
         let other_game = match state {
             SelectedGameState::OtherRunning { id } => {
                 let (name, _) = other_game_info(&self.instances.list, id);
@@ -332,7 +337,9 @@ impl Launcher {
             .gap(px(10.))
             .child(play)
             .children(
-                (is_selected_starting && self.pre_launch_stoppable()).then(|| {
+                ((is_selected_starting || other_starting_without_home)
+                    && self.pre_launch_stoppable())
+                .then(|| {
                     action("pre-launch-cancel", Action::Quiet, &t)
                         .child(label(tr("Cancel").to_string()))
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {

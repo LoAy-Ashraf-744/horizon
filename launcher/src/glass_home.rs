@@ -398,17 +398,19 @@ impl Launcher {
                 ))
             }
             SelectedGameState::OtherStarting { id } => {
-                let (name, _) = other_game_info(&self.instances.list, id);
+                let (name, has_home) = other_game_info(&self.instances.list, id);
                 Some((
                     frame::RowPhase::Starting,
                     other_game_label(frame::RowPhase::Starting, name),
-                    false,
+                    !has_home,
                 ))
             }
             _ => None,
         };
         let is_quiet_game = is_selected_running || other_game.is_some();
-        let stop_other_here = other_game.as_ref().is_some_and(|(_, _, stop)| *stop);
+        let other_without_home = other_game.as_ref().is_some_and(|(_, _, no_home)| *no_home);
+        let other_is_running = matches!(state, SelectedGameState::OtherRunning { .. });
+        let other_is_starting = matches!(state, SelectedGameState::OtherStarting { .. });
         let follows = self
             .selected_instance()
             .is_some_and(|i| i.follows_horizon());
@@ -544,10 +546,12 @@ impl Launcher {
                 }
                 cx.notify();
             }));
-        // A build under way, a start's pre-launch command, or a running game with no Home view
-        // of its own (a ported/registry modpack) can be stopped here.
-        let stop_pre_launch = is_selected_starting && self.pre_launch_stoppable();
-        let stop_other = stop_other_here && busy.is_none();
+        // A build under way, a start's pre-launch command (for this instance, or for a starting
+        // game with no Home view of its own), or a running game with no Home view of its own (a
+        // ported/registry modpack) can be stopped here.
+        let stop_pre_launch = (is_selected_starting || (other_is_starting && other_without_home))
+            && self.pre_launch_stoppable();
+        let stop_other = other_is_running && other_without_home && busy.is_none();
         let more = if building || stop_pre_launch || stop_other {
             div()
                 .id("play-cancel")
@@ -850,10 +854,10 @@ impl Launcher {
                 })
                 .active(|s| s.opacity(0.92).shadow(Vec::new()))
             });
-        let group = if passive_other {
-            group
+        let (group, more) = if passive_other {
+            (group, keyboard(more, &t))
         } else {
-            keyboard(group, &t)
+            (keyboard(group, &t), more)
         };
         let mut wrap = div().relative().child(group.child(more));
         if open {
